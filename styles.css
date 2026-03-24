@@ -510,6 +510,19 @@ h3 {
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
 }
 
+.guide-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.guide-card {
+  background: linear-gradient(160deg, rgba(15, 118, 110, 0.08), rgba(255, 255, 255, 0.9));
+}
+
+.guide-card p {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
 button:not(.ghost):not(.danger) {
   background: linear-gradient(135deg, #0f766e, #125d57);
   color: white;
