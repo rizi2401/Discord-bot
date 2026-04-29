@@ -257,6 +257,10 @@ export const createBot = ({ config, database }) => {
   };
 
   const notifyMissingDiscordLink = async (shift, reason) => {
+    if (!shift.isReminderAudience) {
+      return;
+    }
+
     const settings = await getSettings();
     if (!settings.shiftLogChannelId) {
       return;
@@ -379,6 +383,9 @@ export const createBot = ({ config, database }) => {
     }
 
     const existingSession = await database.getOpenClockSessionForShift(shift.id);
+    const actorOpenSession = actor.sonaraUserId
+      ? await database.getCurrentOpenSessionForSonaraUser(actor.sonaraUserId)
+      : await database.getCurrentOpenSessionForDiscordUser(actor.discordUserId);
 
     if (existingSession) {
       if (interaction) {
@@ -392,11 +399,24 @@ export const createBot = ({ config, database }) => {
       return { ok: false, reason: "already_open", shift };
     }
 
+    if (actorOpenSession && actorOpenSession.shiftId !== shift.id) {
+      if (interaction) {
+        await interaction.reply(
+          normalizeInteractionReply(
+            interaction,
+            "Du bist bereits in einer anderen Schicht eingestempelt und musst dich dort erst ausstempeln."
+          )
+        );
+      }
+      return { ok: false, reason: "already_open_elsewhere", shift };
+    }
+
     const occurredAt = new Date().toISOString();
     await database.createCheckIn({
       discordUserId: shift.discordUserId,
       occurredAt,
       shiftId: shift.id,
+      shiftSnapshot: shift,
       sonaraUserId: shift.sonaraUserId,
       source
     });
@@ -476,6 +496,11 @@ export const createBot = ({ config, database }) => {
     const settings = await getSettings();
     const eventKey = type.startsWith("pre-") ? type : `dm-${type}`;
 
+    if (!shift.isReminderAudience) {
+      await database.markNotification(shift.id, eventKey, new Date());
+      return false;
+    }
+
     if (await database.hasNotification(shift.id, eventKey)) {
       return false;
     }
@@ -519,7 +544,7 @@ export const createBot = ({ config, database }) => {
     const teamGrouped = new Map();
 
     const registerChange = (type, shift, previousShift = null) => {
-      if (shift.discordUserId) {
+      if (shift.isReminderAudience && shift.discordUserId) {
         const userChanges = userGrouped.get(shift.discordUserId) ?? [];
         userChanges.push({ previousShift, shift, type });
         userGrouped.set(shift.discordUserId, userChanges);
@@ -537,7 +562,7 @@ export const createBot = ({ config, database }) => {
     changes.removed.forEach((shift) => registerChange("removed", shift));
 
     for (const shift of [...changes.created, ...changes.removed, ...changes.updated.map((item) => item.current)]) {
-      if (!shift.discordUserId) {
+      if (shift.isReminderAudience && !shift.discordUserId) {
         await notifyMissingDiscordLink(
           shift,
           "Aenderungen konnten nicht per DM zugestellt werden."
@@ -797,32 +822,34 @@ export const createBot = ({ config, database }) => {
       const startTime = Date.parse(shift.startsAt);
       const endTime = Date.parse(shift.endsAt);
 
-      for (const minutesBefore of settings.reminderMinutesBefore) {
-        const eventKey = `pre-${minutesBefore}`;
-        const reminderAt = startTime - minutesBefore * 60_000;
-        if (
-          now >= reminderAt &&
-          now <= reminderAt + 120_000 &&
-          !(await database.hasNotification(shift.id, eventKey))
-        ) {
-          await sendShiftNotification({ shift, type: eventKey });
+      if (shift.isReminderAudience) {
+        for (const minutesBefore of settings.reminderMinutesBefore) {
+          const eventKey = `pre-${minutesBefore}`;
+          const reminderAt = startTime - minutesBefore * 60_000;
+          if (
+            now >= reminderAt &&
+            now <= reminderAt + 120_000 &&
+            !(await database.hasNotification(shift.id, eventKey))
+          ) {
+            await sendShiftNotification({ shift, type: eventKey });
+          }
         }
-      }
 
-      if (
-        now >= startTime &&
-        now <= startTime + 120_000 &&
-        !(await database.hasNotification(shift.id, "dm-start"))
-      ) {
-        await sendShiftNotification({ shift, type: "start" });
-      }
+        if (
+          now >= startTime &&
+          now <= startTime + 120_000 &&
+          !(await database.hasNotification(shift.id, "dm-start"))
+        ) {
+          await sendShiftNotification({ shift, type: "start" });
+        }
 
-      if (
-        now >= endTime &&
-        now <= endTime + 120_000 &&
-        !(await database.hasNotification(shift.id, "dm-end"))
-      ) {
-        await sendShiftNotification({ shift, type: "end" });
+        if (
+          now >= endTime &&
+          now <= endTime + 120_000 &&
+          !(await database.hasNotification(shift.id, "dm-end"))
+        ) {
+          await sendShiftNotification({ shift, type: "end" });
+        }
       }
 
       if (!shift.requiresClocking) {
@@ -1308,8 +1335,10 @@ export const createBot = ({ config, database }) => {
         return null;
       }
 
-      const shifts = await database.listShiftsForSonaraUser(user.id);
-      const activeSession = await database.getCurrentOpenSessionForSonaraUser(user.id);
+      const shifts = user.isModerator ? await database.listShiftsForSonaraUser(user.id) : [];
+      const activeSession = user.isModerator
+        ? await database.getCurrentOpenSessionForSonaraUser(user.id)
+        : null;
       return {
         activeSession,
         shifts,
@@ -1357,6 +1386,8 @@ export const createBot = ({ config, database }) => {
             message:
               result.reason === "already_open"
                 ? "Du bist fuer diese Schicht bereits eingestempelt."
+                : result.reason === "already_open_elsewhere"
+                  ? "Du bist bereits in einer anderen Schicht eingestempelt."
                 : "Ich habe gerade keine passende Schicht zum Einstempeln gefunden.",
             ok: false
           };

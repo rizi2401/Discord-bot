@@ -18,18 +18,6 @@ const parseReminderMinutes = (value, fallback = [1440, 60, 15]) => {
   return parsed.length > 0 ? parsed : fallback;
 };
 
-const parseList = (value, fallback = "") => {
-  return String(value ?? fallback)
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-};
-
-const parseEnum = (value, allowed, fallback) => {
-  const normalized = String(value ?? "").trim().toLowerCase();
-  return allowed.includes(normalized) ? normalized : fallback;
-};
-
 const parseIdentifier = (value, fallback, { optional = false } = {}) => {
   const raw = String(value ?? fallback ?? "").trim();
 
@@ -71,57 +59,97 @@ export const config = {
   timezone: String(process.env.TIMEZONE ?? "Europe/Berlin"),
   voiceRoomIdleMinutes: parseInteger(process.env.VOICE_ROOM_IDLE_MINUTES, 10),
   sonara: {
-    adminRoleKeys: parseList(process.env.SONARA_ADMIN_ROLE_KEYS, "admin,founder"),
+    blockedColumn: parseIdentifier(process.env.SONARA_BLOCKED_COLUMN, "is_blocked", {
+      optional: true
+    }),
+    dateKeyColumn: parseIdentifier(process.env.SONARA_SHIFT_DATE_COLUMN, "date_key"),
     discordIdColumn: parseIdentifier(process.env.SONARA_DISCORD_ID_COLUMN, "discord_user_id"),
-    displayNameColumn: parseIdentifier(process.env.SONARA_DISPLAY_NAME_COLUMN, "display_name"),
-    headRoleKeys: parseList(process.env.SONARA_HEAD_ROLE_KEYS, "head-moderator"),
-    loginColumn: parseIdentifier(process.env.SONARA_LOGIN_COLUMN, "username"),
-    moderatorRoleKeys: parseList(
-      process.env.SONARA_MODERATOR_ROLE_KEYS,
-      "moderator,head-moderator"
+    discordNameColumn: parseIdentifier(
+      process.env.SONARA_DISCORD_NAME_COLUMN,
+      "discord_name",
+      { optional: true }
     ),
+    displayNameColumn: parseIdentifier(process.env.SONARA_DISPLAY_NAME_COLUMN, "display_name"),
+    loginColumn: parseIdentifier(process.env.SONARA_LOGIN_COLUMN, "username"),
     passwordHashColumn: parseIdentifier(
       process.env.SONARA_PASSWORD_HASH_COLUMN,
       "password_hash"
     ),
-    passwordMode: parseEnum(
-      process.env.SONARA_PASSWORD_MODE,
-      ["bcrypt", "plain", "bcrypt_or_plain"],
-      "bcrypt_or_plain"
-    ),
-    roleKeyColumn: parseIdentifier(process.env.SONARA_ROLE_KEY_COLUMN, "slug"),
-    roleNameColumn: parseIdentifier(process.env.SONARA_ROLE_NAME_COLUMN, "name"),
-    rolesTable: parseIdentifier(process.env.SONARA_ROLES_TABLE, "roles"),
+    roleColumn: parseIdentifier(process.env.SONARA_ROLE_COLUMN, "role"),
     schema: parseIdentifier(process.env.SONARA_SCHEMA, "public"),
-    shiftClockingColumn: parseIdentifier(
-      process.env.SONARA_SHIFT_CLOCKING_COLUMN,
-      "requires_clocking"
+    shiftEndTimeColumn: parseIdentifier(process.env.SONARA_SHIFT_END_TIME_COLUMN, "end_time"),
+    shiftIdColumn: parseIdentifier(process.env.SONARA_SHIFT_ID_COLUMN, "id"),
+    shiftIsLeadColumn: parseIdentifier(process.env.SONARA_SHIFT_IS_LEAD_COLUMN, "is_lead", {
+      optional: true
+    }),
+    shiftMemberIdColumn: parseIdentifier(
+      process.env.SONARA_SHIFT_MEMBER_ID_COLUMN,
+      "member_id"
     ),
-    shiftEndColumn: parseIdentifier(process.env.SONARA_SHIFT_END_COLUMN, "ends_at"),
-    shiftNotesColumn: parseIdentifier(process.env.SONARA_SHIFT_NOTES_COLUMN, "notes"),
-    shiftStatusColumn: parseIdentifier(
-      process.env.SONARA_SHIFT_STATUS_COLUMN,
-      "status",
-      { optional: true }
+    shiftNotesColumn: parseIdentifier(process.env.SONARA_SHIFT_NOTES_COLUMN, "notes", {
+      optional: true
+    }),
+    shiftStartTimeColumn: parseIdentifier(
+      process.env.SONARA_SHIFT_START_TIME_COLUMN,
+      "start_time"
     ),
     shiftTable: parseIdentifier(process.env.SONARA_SHIFTS_TABLE, "shifts"),
-    shiftTeamKeyColumn: parseIdentifier(process.env.SONARA_SHIFT_TEAM_KEY_COLUMN, "team_key"),
-    shiftUpdatedAtColumn: parseIdentifier(
-      process.env.SONARA_SHIFT_UPDATED_AT_COLUMN,
-      "updated_at"
-    ),
-    shiftUserIdColumn: parseIdentifier(process.env.SONARA_SHIFT_USER_ID_COLUMN, "user_id"),
-    shiftActiveStatuses: parseList(
-      process.env.SONARA_SHIFT_ACTIVE_STATUSES,
-      "planned,confirmed"
-    ),
-    shiftStartColumn: parseIdentifier(process.env.SONARA_SHIFT_START_COLUMN, "starts_at"),
-    userActiveColumn: parseIdentifier(
-      process.env.SONARA_ACTIVE_COLUMN,
-      "is_active",
+    shiftTaskColumn: parseIdentifier(process.env.SONARA_SHIFT_TASK_COLUMN, "task", {
+      optional: true
+    }),
+    shiftTypeColumn: parseIdentifier(
+      process.env.SONARA_SHIFT_TYPE_COLUMN,
+      "shift_type",
       { optional: true }
     ),
-    userRolesTable: parseIdentifier(process.env.SONARA_USER_ROLES_TABLE, "user_roles"),
-    usersTable: parseIdentifier(process.env.SONARA_USERS_TABLE, "users")
+    shiftUpdatedAtColumn: parseIdentifier(
+      process.env.SONARA_SHIFT_UPDATED_AT_COLUMN,
+      "updated_at",
+      { optional: true }
+    ),
+    shiftWorldColumn: parseIdentifier(process.env.SONARA_SHIFT_WORLD_COLUMN, "world", {
+      optional: true
+    }),
+    timeEntryCheckInColumn: parseIdentifier(
+      process.env.SONARA_TIME_ENTRY_CHECKIN_COLUMN,
+      "check_in_at"
+    ),
+    timeEntryCheckOutColumn: parseIdentifier(
+      process.env.SONARA_TIME_ENTRY_CHECKOUT_COLUMN,
+      "check_out_at"
+    ),
+    timeEntryCreatedAtColumn: parseIdentifier(
+      process.env.SONARA_TIME_ENTRY_CREATED_AT_COLUMN,
+      "created_at",
+      { optional: true }
+    ),
+    timeEntryIdColumn: parseIdentifier(process.env.SONARA_TIME_ENTRY_ID_COLUMN, "id"),
+    timeEntryShiftIdColumn: parseIdentifier(
+      process.env.SONARA_TIME_ENTRY_SHIFT_ID_COLUMN,
+      "shift_id",
+      { optional: true }
+    ),
+    timeEntryShiftSnapshotColumn: parseIdentifier(
+      process.env.SONARA_TIME_ENTRY_SHIFT_SNAPSHOT_COLUMN,
+      "shift_snapshot",
+      { optional: true }
+    ),
+    timeEntrySortIndexColumn: parseIdentifier(
+      process.env.SONARA_TIME_ENTRY_SORT_INDEX_COLUMN,
+      "sort_index",
+      { optional: true }
+    ),
+    timeEntryTable: parseIdentifier(process.env.SONARA_TIME_ENTRIES_TABLE, "time_entries"),
+    timeEntryUserIdColumn: parseIdentifier(
+      process.env.SONARA_TIME_ENTRY_USER_ID_COLUMN,
+      "user_id"
+    ),
+    usersTable: parseIdentifier(process.env.SONARA_USERS_TABLE, "users"),
+    userIdColumn: parseIdentifier(process.env.SONARA_USER_ID_COLUMN, "id"),
+    vrchatNameColumn: parseIdentifier(
+      process.env.SONARA_VRCHAT_NAME_COLUMN,
+      "vrchat_name",
+      { optional: true }
+    )
   }
 };

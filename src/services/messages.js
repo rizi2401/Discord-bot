@@ -132,10 +132,13 @@ export const buildIncidentMessage = ({ incidentType, shift }) => {
     incidentType === "no_show"
       ? "Ein Teammitglied hat seine Schicht nicht rechtzeitig angetreten."
       : "Ein Teammitglied hat sich nicht rechtzeitig ausgestempelt.";
+  const affectedLabel = shift.discordUserId
+    ? `<@${shift.discordUserId}> (${shift.moderatorName})`
+    : shift.moderatorName;
 
   return [
     headline,
-    `Betroffen: <@${shift.discordUserId}> (${shift.moderatorName})`,
+    `Betroffen: ${affectedLabel}`,
     `Schicht: ${asDiscordTimestamp(shift.startsAt, "F")} bis ${asDiscordTimestamp(shift.endsAt, "t")}`,
     shift.notes ? `Notiz: ${shift.notes}` : ""
   ]

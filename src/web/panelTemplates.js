@@ -279,9 +279,9 @@ export const renderLoginPage = ({ botName, errorMessage = "" }) => {
     ${flash(errorMessage, "error")}
     <section class="panel" style="max-width: 520px; margin-inline: auto;">
       <h2>Mit Sonara anmelden</h2>
-      <p class="muted">Der Hub nutzt dieselben Zugangsdaten wie Sonara. Admins und Moderatoren koennen sich hier direkt anmelden.</p>
+      <p class="muted">Der Hub nutzt dieselben Zugangsdaten wie Sonara. Er akzeptiert den Sonara-Benutzernamen, den VRChat-Namen oder den Discord-Namen.</p>
       <form method="post" action="/auth/login">
-        ${textInput({ label: "Benutzername oder Login", name: "login", placeholder: "dein Sonara-Login" })}
+        ${textInput({ label: "Benutzername, VRChat-Name oder Discord-Name", name: "login", placeholder: "dein Sonara-Login" })}
         ${textInput({ label: "Passwort", name: "password", type: "password", placeholder: "dein Passwort" })}
         <button type="submit">Einloggen</button>
       </form>
@@ -338,7 +338,7 @@ export const renderHubPage = ({
             <article class="shift-item">
               <h3>${escapeHtml(shift.moderatorName)}</h3>
               <div class="shift-meta">${escapeHtml(shift.startsAtLabel)} bis ${escapeHtml(shift.endsAtLabel)}</div>
-              <div class="shift-meta">Team: ${escapeHtml(shift.teamKey || "nicht gesetzt")}</div>
+              <div class="shift-meta">Rolle/Team: ${escapeHtml(shift.teamKey || shift.userRole || "nicht gesetzt")}</div>
               ${shift.notes ? `<p>${escapeHtml(shift.notes)}</p>` : `<p class="muted">Keine Notiz zur Schicht hinterlegt.</p>`}
               <div class="actions">
                 ${actionMarkup}
@@ -477,7 +477,7 @@ export const renderAdminPage = ({
       </section>
       <section class="panel">
         <h2>Team-Routing</h2>
-        <p class="muted">Jeder <code>teamKey</code> aus Sonara kann auf eine Discord-Rolle und einen Teamkanal gemappt werden.</p>
+        <p class="muted">Aktuell wird als <code>teamKey</code> direkt der Sonara-<code>users.role</code>-Wert verwendet, zum Beispiel <code>moderator</code>.</p>
         <table>
           <thead>
             <tr>

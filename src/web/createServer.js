@@ -286,7 +286,7 @@ export const createServer = ({ client, config, database, runtime }) => {
       response.status(400).send(
         renderLoginPage({
           botName: "Sonara Operations Bot",
-          errorMessage: "Bitte gib Benutzername und Passwort ein."
+          errorMessage: "Bitte gib Benutzername, VRChat-Name oder Discord-Name plus Passwort ein."
         })
       );
       return;
