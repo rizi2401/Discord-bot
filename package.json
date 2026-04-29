@@ -1,14 +1,21 @@
 {
-  "name": "vrchat-mod-team-portal",
+  "name": "operations-discord-bot",
   "version": "1.0.0",
-  "private": true,
-  "description": "Online-Portal fuer VRChat Moderations-Team Planung",
-  "main": "server.js",
+  "description": "Operations Discord bot for onboarding, tickets, shifts and automation.",
+  "type": "module",
+  "main": "src/index.js",
   "scripts": {
-    "start": "node server.js",
-    "build": "node --check server.js && node --check app.js"
+    "start": "node src/index.js",
+    "check": "node --check src/index.js && node --check src/config.js && node --check src/bot/createBot.js && node --check src/bot/registerCommands.js && node --check src/services/automationService.js && node --check src/services/messages.js && node --check src/store/database.js && node --check src/store/settings.js && node --check src/web/createServer.js && node --check src/web/panelTemplates.js"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "discord.js": "^14.19.3",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "pg": "^8.16.3"
   }
 }
