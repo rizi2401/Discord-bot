@@ -5,6 +5,9 @@ export const COMMAND_DEFINITIONS = [
     .setName("meine-schichten")
     .setDescription("Zeigt deine kommenden Schichten an."),
   new SlashCommandBuilder()
+    .setName("verknuepfen")
+    .setDescription("Verknuepft dein Discord-Konto sicher mit deinem Sonara-Konto."),
+  new SlashCommandBuilder()
     .setName("einstempeln")
     .setDescription("Stempelt dich fuer deine aktuelle Schicht ein."),
   new SlashCommandBuilder()

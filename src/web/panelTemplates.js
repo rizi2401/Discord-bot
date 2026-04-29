@@ -62,6 +62,51 @@ const routeRow = (route) => {
   `;
 };
 
+const hubUserRow = (user) => {
+  const discordState = user.hasDiscordLink
+    ? [
+        user.discordName ? escapeHtml(user.discordName) : "Discord",
+        user.discordUserId ? `<code>${escapeHtml(user.discordUserId)}</code>` : "",
+        user.hasDiscordSyncMismatch ? `<span class="pill">Sync-Mismatch</span>` : ""
+      ]
+        .filter(Boolean)
+        .join("<br />")
+    : '<span class="muted">nicht verknuepft</span>';
+
+  const dmToggleLabel = user.shiftDmEnabled ? "Schicht-DMs deaktivieren" : "Schicht-DMs aktivieren";
+  const dmToggleValue = user.shiftDmEnabled ? "false" : "true";
+  const dmState = user.shiftDmEnabled ? "aktiv" : "deaktiviert";
+
+  return `
+    <tr>
+      <td>
+        <strong>${escapeHtml(user.displayName)}</strong><br />
+        <span class="muted">${escapeHtml(user.loginName)}</span>
+      </td>
+      <td>${escapeHtml(user.roleNames.join(", ") || user.role || "-")}</td>
+      <td>${discordState}</td>
+      <td>${escapeHtml(dmState)}</td>
+      <td>
+        <div class="actions compact">
+          <form method="post" action="/hub/admin/users/${encodeURIComponent(user.id)}/dm-preferences">
+            <input type="hidden" name="shiftDmEnabled" value="${escapeHtml(dmToggleValue)}" />
+            <button type="submit" class="secondary">${escapeHtml(dmToggleLabel)}</button>
+          </form>
+          ${
+            user.hasDiscordLink
+              ? `
+                <form method="post" action="/hub/admin/users/${encodeURIComponent(user.id)}/unlink-discord">
+                  <button type="submit" class="danger">Discord trennen</button>
+                </form>
+              `
+              : ""
+          }
+        </div>
+      </td>
+    </tr>
+  `;
+};
+
 const flash = (message, tone = "success") => {
   if (!message) {
     return "";
@@ -206,8 +251,14 @@ const shell = ({ body, title }) => {
         gap: 10px;
         flex-wrap: wrap;
       }
+      .actions.compact {
+        gap: 8px;
+      }
       .actions > * {
         flex: 1 1 180px;
+      }
+      .actions.compact > * {
+        flex: 1 1 150px;
       }
       .toolbar {
         display: flex;
@@ -270,7 +321,12 @@ const shell = ({ body, title }) => {
   `;
 };
 
-export const renderLoginPage = ({ botName, errorMessage = "" }) => {
+export const renderLoginPage = ({
+  botName,
+  errorMessage = "",
+  introMessage = "",
+  redirectTo = ""
+}) => {
   const body = `
     <section class="hero">
       <h1>${escapeHtml(botName)}</h1>
@@ -279,8 +335,10 @@ export const renderLoginPage = ({ botName, errorMessage = "" }) => {
     ${flash(errorMessage, "error")}
     <section class="panel" style="max-width: 520px; margin-inline: auto;">
       <h2>Mit Sonara anmelden</h2>
+      ${introMessage ? `<p class="muted">${escapeHtml(introMessage)}</p>` : ""}
       <p class="muted">Der Hub nutzt dieselben Zugangsdaten wie Sonara. Er akzeptiert den Sonara-Benutzernamen, den VRChat-Namen oder den Discord-Namen.</p>
       <form method="post" action="/auth/login">
+        ${redirectTo ? `<input type="hidden" name="redirectTo" value="${escapeHtml(redirectTo)}" />` : ""}
         ${textInput({ label: "Benutzername, VRChat-Name oder Discord-Name", name: "login", placeholder: "dein Sonara-Login" })}
         ${textInput({ label: "Passwort", name: "password", type: "password", placeholder: "dein Passwort" })}
         <button type="submit">Einloggen</button>
@@ -369,11 +427,24 @@ export const renderHubPage = ({
       </div>
     </section>
     ${flash(flashMessage, flashTone)}
-    ${!user.discordUserId ? flash("Dein Sonara-Konto hat noch keine Discord-ID. Web-Clocking funktioniert, aber DMs koennen noch nicht sauber zugestellt werden.", "warn") : ""}
+    ${
+      !user.hasDiscordLink
+        ? flash(
+            "Dein Sonara-Konto ist noch nicht mit Discord verknuepft. Web-Clocking funktioniert weiter, aber fuer Schicht-DMs musst du zuerst /verknuepfen im Discord-Server nutzen.",
+            "warn"
+          )
+        : !user.shiftDmEnabled
+          ? flash(
+              "Dein Discord-Konto ist verknuepft, aber Schicht-DMs sind fuer dein Sonara-Konto aktuell deaktiviert. Ein Admin kann das im Bot-Hub freischalten.",
+              "warn"
+            )
+          : ""
+    }
     <section class="panel">
       <div class="grid">
         ${card("Rollen", user.roleNames.join(", ") || "keine")}
-        ${card("Discord-Verknuepfung", user.discordUserId || "fehlt")}
+        ${card("Discord-Verknuepfung", user.discordUserId || "fehlt", user.discordName || "Noch kein Discord-Konto verbunden")}
+        ${card("Schicht-DMs", user.shiftDmEnabled ? "aktiv" : "deaktiviert", user.shiftDmEnabled ? "Erinnerungen und DM-Clocking sind fuer dein Konto freigeschaltet." : "Ein Admin kann die DMs pro Person an- oder ausschalten.")}
         ${card(
           "Aktive Session",
           activeSession ? "Ja" : "Nein",
@@ -392,6 +463,56 @@ export const renderHubPage = ({
   return shell({ body, title: `${botName} Moderator-Hub` });
 };
 
+export const renderDiscordLinkPage = ({
+  botName,
+  conflictUser = null,
+  linkRequest,
+  token,
+  user
+}) => {
+  const conflictMarkup = conflictUser
+    ? `
+      ${flash(
+        `Dieses Discord-Konto ist bereits mit ${conflictUser.displayName} (${conflictUser.loginName}) verknuepft. Bitte loese die alte Verknuepfung zuerst im Admin-Hub.`,
+        "error"
+      )}
+    `
+    : "";
+
+  const body = `
+    <section class="hero">
+      <h1>${escapeHtml(botName)} Discord-Verknuepfung</h1>
+      <p>Hier verbindest du das Discord-Konto aus deinem Slash-Command sicher mit deinem Sonara-Konto.</p>
+    </section>
+    ${conflictMarkup}
+    <section class="panel">
+      <div class="grid">
+        ${card("Sonara-Konto", user.displayName, user.loginName)}
+        ${card("Discord-Name", linkRequest.discordName || "unbekannt")}
+        ${card("Discord-ID", linkRequest.discordUserId)}
+        ${card("Gueltig bis", formatDate(linkRequest.expiresAt))}
+      </div>
+      <p class="muted" style="margin-top: 18px;">
+        Nach der Bestätigung schreibt der Bot deine Discord-ID nach Sonara und in seine eigene Spiegelung. Dadurch koennen spaeter DMs und Clocking sauber zugestellt werden.
+      </p>
+      ${
+        conflictUser
+          ? `<div class="actions"><a href="/hub"><button class="secondary">Zum Login</button></a></div>`
+          : `
+            <form method="post" action="/hub/discord-link/confirm">
+              <input type="hidden" name="token" value="${escapeHtml(token)}" />
+              <div class="actions">
+                <button type="submit">Discord jetzt verknuepfen</button>
+              </div>
+            </form>
+          `
+      }
+    </section>
+  `;
+
+  return shell({ body, title: `${botName} Discord-Verknuepfung` });
+};
+
 export const renderAdminPage = ({
   botName,
   diagnostics,
@@ -399,7 +520,8 @@ export const renderAdminPage = ({
   flashTone = "success",
   settings,
   teamRoutes,
-  user
+  user,
+  users
 }) => {
   const missingSettingsNotice = diagnostics.missingSettings.length
     ? `
@@ -508,6 +630,24 @@ export const renderAdminPage = ({
         </div>
       </section>
     </div>
+    <section class="panel">
+      <h2>Benutzer und Schicht-DMs</h2>
+      <p class="muted">Hier steuerst du pro Sonara-Konto, ob Schicht-DMs aktiv sind. Die Discord-Verknuepfung kommt aus dem Self-Link-Flow ueber <code>/verknuepfen</code>.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Sonara</th>
+            <th>Rolle</th>
+            <th>Discord</th>
+            <th>Schicht-DMs</th>
+            <th>Aktionen</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${users.length ? users.map(hubUserRow).join("") : "<tr><td colspan=\"5\">Noch keine Sonara-Nutzer gefunden.</td></tr>"}
+        </tbody>
+      </table>
+    </section>
   `;
 
   return shell({ body, title: `${botName} Admin-Hub` });

@@ -34,6 +34,7 @@ const TICKET_CLOSE_BUTTON = "ticket|close";
 const VERIFY_BUTTON = "verify|confirm";
 const VOICE_CREATE_BUTTON = "voice|create";
 const CLOCK_PREFIX = "clock";
+const DISCORD_LINK_REQUEST_TTL_MS = 1000 * 60 * 20;
 
 const GENERAL_CRITICAL_SETTINGS = [
   "welcomeChannelId",
@@ -950,6 +951,38 @@ export const createBot = ({ config, database }) => {
       return;
     }
 
+    if (interaction.commandName === "verknuepfen") {
+      if (!config.botBaseUrl) {
+        await interaction.reply(
+          normalizeInteractionReply(
+            interaction,
+            "Die Web-Adresse des Bot-Hubs ist noch nicht gesetzt. Bitte gib dem Admin Bescheid."
+          )
+        );
+        return;
+      }
+
+      const request = await database.createDiscordLinkRequest({
+        discordName: interaction.user.username,
+        discordUserId: interaction.user.id,
+        expiresAt: new Date(Date.now() + DISCORD_LINK_REQUEST_TTL_MS),
+        guildId: interaction.guildId ?? ""
+      });
+      const linkUrl = `${config.botBaseUrl}/hub/discord-link?token=${encodeURIComponent(request.token)}`;
+
+      await interaction.reply(
+        normalizeInteractionReply(
+          interaction,
+          [
+            "Dein Verknuepfungs-Link ist bereit.",
+            `Oeffne ihn innerhalb der naechsten 20 Minuten: ${linkUrl}`,
+            "Danach meldest du dich mit deinem Sonara-Konto an und bestaetigst die Verknuepfung."
+          ].join("\n")
+        )
+      );
+      return;
+    }
+
     if (interaction.commandName === "einstempeln") {
       await handleCheckIn({
         actor: { discordUserId: interaction.user.id },
@@ -1326,6 +1359,22 @@ export const createBot = ({ config, database }) => {
         stats: await database.getDashboardStats(new Date())
       };
     },
+    async getAdminHubData() {
+      const settings = await getSettings();
+      return {
+        diagnostics: {
+          missingSettings: await getMissingSettings(),
+          settings,
+          stats: await database.getDashboardStats(new Date())
+        },
+        settings,
+        teamRoutes: await database.listTeamRoutes(),
+        users: await database.listHubUsers()
+      };
+    },
+    async getDiscordLinkRequest(token) {
+      return database.getDiscordLinkRequest(token);
+    },
     async getHubUser(userId) {
       return database.getHubUserById(userId);
     },
@@ -1344,6 +1393,19 @@ export const createBot = ({ config, database }) => {
         shifts,
         user
       };
+    },
+    async confirmDiscordLink({ token, userId }) {
+      const request = await database.getDiscordLinkRequest(token);
+      if (!request) {
+        return { ok: false, reason: "request_not_found" };
+      }
+
+      return database.completeDiscordLink({
+        actorUserId: userId,
+        discordName: request.discordName,
+        discordUserId: request.discordUserId,
+        token
+      });
     },
     async getSettings() {
       return getSettings();
@@ -1420,6 +1482,20 @@ export const createBot = ({ config, database }) => {
             ok: false
           };
     },
+    async setShiftDmPreference({ enabled, targetUserId, updatedBy }) {
+      await database.setUserNotificationPreference({
+        shiftDmEnabled: enabled,
+        updatedBy,
+        userId: targetUserId
+      });
+      return database.getHubUserById(targetUserId);
+    },
+    async unlinkDiscordIdentity({ targetUserId, updatedBy }) {
+      return database.unlinkDiscordIdentity({
+        actorUserId: updatedBy,
+        sonaraUserId: targetUserId
+      });
+    },
     async refreshSettings() {
       invalidateSettings();
       return getSettings();
@@ -1431,6 +1507,7 @@ export const createBot = ({ config, database }) => {
       await refreshTrackedShifts();
       await runReminderCycle();
       await cleanupVoiceRooms();
+      await database.deleteExpiredDiscordLinkRequests(new Date());
       await database.deleteExpiredWebSessions(new Date());
     }
   };

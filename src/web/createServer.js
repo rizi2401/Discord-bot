@@ -2,6 +2,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import express from "express";
 import { SETTINGS_FORM_FIELDS } from "../store/settings.js";
 import {
+  renderDiscordLinkPage,
   renderAdminPage,
   renderErrorPage,
   renderHubPage,
@@ -71,6 +72,19 @@ const mapHubFlash = ({ flash, tone }) => {
   };
 };
 
+const normalizeLocalRedirect = (value, fallback = "/hub") => {
+  const candidate = String(value ?? "").trim();
+  if (!candidate.startsWith("/")) {
+    return fallback;
+  }
+
+  if (candidate.startsWith("//")) {
+    return fallback;
+  }
+
+  return candidate;
+};
+
 const asyncHandler = (handler) => {
   return (request, response, next) => {
     Promise.resolve(handler(request, response, next)).catch(next);
@@ -131,7 +145,7 @@ export const createServer = ({ client, config, database, runtime }) => {
     }
 
     const user = await runtime.getHubUser(session.userId);
-    if (!user || !user.canAccessHub) {
+    if (!user) {
       await database.deleteWebSession(sessionId);
       return null;
     }
@@ -144,6 +158,18 @@ export const createServer = ({ client, config, database, runtime }) => {
     const auth = await authenticateHubSession(request);
     if (!auth) {
       response.redirect("/hub");
+      return;
+    }
+
+    if (!auth.user.canAccessHub) {
+      response.status(403).send(
+        renderErrorPage({
+          actionHref: "/hub",
+          actionLabel: "Zurueck zum Login",
+          message: "Dein Sonara-Konto hat keinen Zugriff auf den Bot-Hub.",
+          title: "Hub-Zugriff verweigert"
+        })
+      );
       return;
     }
 
@@ -223,6 +249,19 @@ export const createServer = ({ client, config, database, runtime }) => {
       return;
     }
 
+    if (!auth.user.canAccessHub) {
+      response.status(403).send(
+        renderErrorPage({
+          actionHref: "/hub",
+          actionLabel: "Zurueck zum Login",
+          message:
+            "Dein Sonara-Konto ist zwar bekannt, hat aber keinen Zugriff auf den Hub. Discord-Verknuepfungen kannst du trotzdem ueber /verknuepfen starten.",
+          title: "Hub-Zugriff verweigert"
+        })
+      );
+      return;
+    }
+
     const flashState = mapHubFlash({
       flash: request.query.flash,
       tone: request.query.tone
@@ -261,19 +300,96 @@ export const createServer = ({ client, config, database, runtime }) => {
       flash: request.query.flash,
       tone: request.query.tone
     });
-    const diagnostics = await runtime.getDiagnostics();
-    const settings = await runtime.getSettings();
-    const teamRoutes = await database.listTeamRoutes();
+    const adminData = await runtime.getAdminHubData();
 
     response.send(
       renderAdminPage({
         botName: "Sonara Operations Bot",
-        diagnostics,
+        diagnostics: adminData.diagnostics,
         flashMessage: flashState.message,
         flashTone: flashState.tone,
-        settings,
-        teamRoutes,
-        user: request.hubUser
+        settings: adminData.settings,
+        teamRoutes: adminData.teamRoutes,
+        user: request.hubUser,
+        users: adminData.users
+      })
+    );
+  }));
+
+  app.get("/hub/discord-link", asyncHandler(async (request, response) => {
+    const token = String(request.query.token ?? "").trim();
+    if (!token) {
+      response.status(400).send(
+        renderErrorPage({
+          actionHref: "/hub",
+          actionLabel: "Zum Login",
+          message: "Der Verknuepfungs-Link ist unvollstaendig.",
+          title: "Verknuepfung nicht moeglich"
+        })
+      );
+      return;
+    }
+
+    const auth = await authenticateHubSession(request);
+    const linkRequest = await runtime.getDiscordLinkRequest(token);
+    if (!linkRequest) {
+      response.status(404).send(
+        renderErrorPage({
+          actionHref: "/hub",
+          actionLabel: "Zum Login",
+          message: "Dieser Verknuepfungs-Link wurde nicht gefunden oder ist bereits entfernt worden.",
+          title: "Verknuepfungs-Link ungueltig"
+        })
+      );
+      return;
+    }
+
+    if (linkRequest.consumedAt) {
+      response.status(410).send(
+        renderErrorPage({
+          actionHref: "/hub",
+          actionLabel: "Zum Login",
+          message: "Dieser Verknuepfungs-Link wurde bereits verwendet. Starte /verknuepfen im Discord-Server erneut.",
+          title: "Verknuepfungs-Link bereits benutzt"
+        })
+      );
+      return;
+    }
+
+    if (Date.parse(linkRequest.expiresAt) <= Date.now()) {
+      response.status(410).send(
+        renderErrorPage({
+          actionHref: "/hub",
+          actionLabel: "Zum Login",
+          message: "Dieser Verknuepfungs-Link ist abgelaufen. Starte /verknuepfen im Discord-Server erneut.",
+          title: "Verknuepfungs-Link abgelaufen"
+        })
+      );
+      return;
+    }
+
+    if (!auth) {
+      response.send(
+        renderLoginPage({
+          botName: "Sonara Operations Bot",
+          introMessage:
+            "Melde dich mit deinem Sonara-Konto an, um das Discord-Konto aus dem Link sicher zu verknuepfen.",
+          redirectTo: `/hub/discord-link?token=${encodeURIComponent(token)}`
+        })
+      );
+      return;
+    }
+
+    const conflictUser = await database.findUserByDiscordUserId(linkRequest.discordUserId);
+    const hasConflict = conflictUser && conflictUser.id !== auth.user.id;
+
+    response.send(
+      renderDiscordLinkPage({
+        botName: "Sonara Operations Bot",
+        conflictUser: hasConflict ? conflictUser : null,
+        linkRequest,
+        token,
+        user: auth.user
       })
     );
   }));
@@ -281,12 +397,14 @@ export const createServer = ({ client, config, database, runtime }) => {
   app.post("/auth/login", asyncHandler(async (request, response) => {
     const login = String(request.body.login ?? "").trim();
     const password = String(request.body.password ?? "");
+    const redirectTo = normalizeLocalRedirect(request.body.redirectTo, "/hub");
 
     if (!login || !password) {
       response.status(400).send(
         renderLoginPage({
           botName: "Sonara Operations Bot",
-          errorMessage: "Bitte gib Benutzername, VRChat-Name oder Discord-Name plus Passwort ein."
+          errorMessage: "Bitte gib Benutzername, VRChat-Name oder Discord-Name plus Passwort ein.",
+          redirectTo
         })
       );
       return;
@@ -297,17 +415,21 @@ export const createServer = ({ client, config, database, runtime }) => {
       response.status(401).send(
         renderLoginPage({
           botName: "Sonara Operations Bot",
-          errorMessage: "Die Sonara-Zugangsdaten sind ungueltig."
+          errorMessage: "Die Sonara-Zugangsdaten sind ungueltig.",
+          redirectTo
         })
       );
       return;
     }
 
-    if (!user.canAccessHub) {
+    const loginIsForLinkFlow = redirectTo.startsWith("/hub/discord-link");
+
+    if (!user.canAccessHub && !loginIsForLinkFlow) {
       response.status(403).send(
         renderLoginPage({
           botName: "Sonara Operations Bot",
-          errorMessage: "Dein Sonara-Konto hat keinen Zugriff auf den Bot-Hub."
+          errorMessage: "Dein Sonara-Konto hat keinen Zugriff auf den Bot-Hub.",
+          redirectTo
         })
       );
       return;
@@ -330,11 +452,85 @@ export const createServer = ({ client, config, database, runtime }) => {
       })
     );
 
-    response.redirect(user.isAdmin ? "/hub/admin" : "/hub");
+    response.redirect(loginIsForLinkFlow ? redirectTo : user.isAdmin ? "/hub/admin" : "/hub");
   }));
 
-  app.post("/auth/logout", asyncHandler(requireHubAuth), asyncHandler(async (request, response) => {
-    await database.deleteWebSession(request.hubSession.sessionId);
+  app.post("/hub/discord-link/confirm", asyncHandler(async (request, response) => {
+    const auth = await authenticateHubSession(request);
+    if (!auth) {
+      response.redirect("/hub");
+      return;
+    }
+
+    const token = String(request.body.token ?? "").trim();
+    if (!token) {
+      response.status(400).send(
+        renderErrorPage({
+          actionHref: "/hub",
+          actionLabel: "Zum Login",
+          message: "Fuer die Discord-Verknuepfung fehlt der Token.",
+          title: "Verknuepfung nicht moeglich"
+        })
+      );
+      return;
+    }
+
+    const result = await runtime.confirmDiscordLink({
+      token,
+      userId: auth.user.id
+    });
+
+    if (!result.ok) {
+      if (result.reason === "discord_conflict" && result.conflictUser) {
+        response.status(409).send(
+          renderDiscordLinkPage({
+            botName: "Sonara Operations Bot",
+            conflictUser: result.conflictUser,
+            linkRequest: await runtime.getDiscordLinkRequest(token),
+            token,
+            user: auth.user
+          })
+        );
+        return;
+      }
+
+      response.status(400).send(
+        renderErrorPage({
+          actionHref: "/hub",
+          actionLabel: "Zum Login",
+          message:
+            result.reason === "request_expired"
+              ? "Der Verknuepfungs-Link ist abgelaufen. Starte /verknuepfen erneut."
+              : result.reason === "request_consumed"
+                ? "Der Verknuepfungs-Link wurde bereits benutzt. Starte /verknuepfen erneut."
+                : "Die Discord-Verknuepfung konnte nicht abgeschlossen werden.",
+          title: "Verknuepfung fehlgeschlagen"
+        })
+      );
+      return;
+    }
+
+    if (result.user?.canAccessHub) {
+      response.redirect("/hub?flash=Discord-Konto erfolgreich verknuepft.&tone=success");
+      return;
+    }
+
+    response.send(
+      renderErrorPage({
+        actionHref: "/hub",
+        actionLabel: "Zurueck zum Login",
+        message:
+          "Dein Discord-Konto wurde erfolgreich verknuepft. Fuer dieses Sonara-Konto gibt es aber keinen Hub-Zugriff.",
+        title: "Verknuepfung erfolgreich"
+      })
+    );
+  }));
+
+  app.post("/auth/logout", asyncHandler(async (request, response) => {
+    const auth = await authenticateHubSession(request);
+    if (auth) {
+      await database.deleteWebSession(auth.session.sessionId);
+    }
     response.setHeader(
       "Set-Cookie",
       clearCookie({
@@ -383,6 +579,42 @@ export const createServer = ({ client, config, database, runtime }) => {
     await database.setManySettings(nextSettings);
     await runtime.refreshSettings();
     response.redirect("/hub/admin?flash=Konfiguration gespeichert.&tone=success");
+  }));
+
+  app.post("/hub/admin/users/:userId/dm-preferences", asyncHandler(requireAdmin), asyncHandler(async (request, response) => {
+    const targetUserId = String(request.params.userId ?? "").trim();
+    if (!targetUserId) {
+      response.redirect("/hub/admin?flash=Sonara-User-ID fehlt.&tone=error");
+      return;
+    }
+
+    const enabled = String(request.body.shiftDmEnabled ?? "").trim() === "true";
+    await runtime.setShiftDmPreference({
+      enabled,
+      targetUserId,
+      updatedBy: request.hubUser.id
+    });
+
+    response.redirect(
+      `/hub/admin?flash=${encodeURIComponent(
+        enabled ? "Schicht-DMs aktiviert." : "Schicht-DMs deaktiviert."
+      )}&tone=success`
+    );
+  }));
+
+  app.post("/hub/admin/users/:userId/unlink-discord", asyncHandler(requireAdmin), asyncHandler(async (request, response) => {
+    const targetUserId = String(request.params.userId ?? "").trim();
+    if (!targetUserId) {
+      response.redirect("/hub/admin?flash=Sonara-User-ID fehlt.&tone=error");
+      return;
+    }
+
+    await runtime.unlinkDiscordIdentity({
+      targetUserId,
+      updatedBy: request.hubUser.id
+    });
+
+    response.redirect("/hub/admin?flash=Discord-Verknuepfung entfernt.&tone=success");
   }));
 
   app.post("/hub/admin/team-routes/save", asyncHandler(requireAdmin), asyncHandler(async (request, response) => {

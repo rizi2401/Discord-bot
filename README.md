@@ -5,6 +5,8 @@ Dieser Bot laeuft als eigener Discord- und Hub-Service neben `Sonara`, nutzt abe
 ## Was die aktuelle Version kann
 
 - Sonara-Login im separaten Moderator- und Admin-Hub
+- Discord-Selbstverknuepfung ueber `/verknuepfen`
+- frei steuerbare Schicht-DMs pro Sonara-Konto
 - Welcome-Nachrichten und Verify per Button
 - Ticketsystem mit privaten Kanaelen, Claim und Schliessen
 - private temporaere Voice-Raeume fuer Mitglieder
@@ -19,14 +21,18 @@ Dieser Bot laeuft als eigener Discord- und Hub-Service neben `Sonara`, nutzt abe
   - Admin-Hub
 - `moderator`
   - Moderator-Hub
-  - DM-Schichtflow
 - `moderation_lead`
   - Moderator-Hub
-  - kein DM-Schichtflow
 - `planner`
   - kein Bot-Hub
 - `member`
   - kein Bot-Hub
+
+Wichtig:
+
+- Hub-Zugriff bleibt rollenbasiert.
+- Schicht-DMs sind **nicht mehr hart an die Rolle gebunden**.
+- Ob jemand DMs bekommt, wird im Admin-Hub pro Person gesteuert.
 
 ## Sonara-Quellen
 
@@ -86,8 +92,12 @@ Es gibt keinen Discord-OAuth-Login fuer den Hub.
 - `GET /health`
 - `GET /hub`
 - `GET /hub/admin`
+- `GET /hub/discord-link?token=...`
+- `POST /hub/discord-link/confirm`
 - `POST /hub/clock-in`
 - `POST /hub/clock-out`
+- `POST /hub/admin/users/:id/dm-preferences`
+- `POST /hub/admin/users/:id/unlink-discord`
 
 Optional fuer Legacy-Importe:
 
@@ -142,12 +152,15 @@ Falls dein Sonara-Schema spaeter andere Tabellen- oder Spaltennamen nutzt, kanns
 Technisch bindend fuer DMs ist `users.discord_user_id`.
 
 - `discord_name` ist nur Anzeige- und Login-Identifier
+- der Bot kann die Discord-ID jetzt selbst nach Sonara zurueckschreiben
 - ohne `discord_user_id` funktioniert der Hub weiter
 - ohne `discord_user_id` landen Reminder nur im Fallback-Kanal
+- Nutzer verknuepfen sich selbst ueber `/verknuepfen`
 
 ## Slash-Commands
 
 - `/meine-schichten`
+- `/verknuepfen`
 - `/einstempeln`
 - `/ausstempeln`
 - `/ticket`

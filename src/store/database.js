@@ -1,12 +1,17 @@
-import { randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import pg from "pg";
 
 const { Pool } = pg;
 
-const TRACKED_SOURCE_ROLES = ["moderator", "moderation_lead"];
+const DEFAULT_SHIFT_DM_ROLE = "moderator";
+const HUB_ACCESS_ROLES = new Set(["admin", "moderator", "moderation_lead"]);
 
 const asIso = (value = new Date()) => {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+};
+
+const hashToken = (value) => {
+  return createHash("sha256").update(String(value ?? "")).digest("hex");
 };
 
 const quoteIdentifier = (identifier) => {
@@ -137,11 +142,15 @@ const toRoleFlags = (role) => {
   const isModerator = normalizedRole === "moderator" || normalizedRole === "moderation_lead";
 
   return {
-    canAccessHub: isAdmin || isModerator,
+    canAccessHub: HUB_ACCESS_ROLES.has(normalizedRole),
     isAdmin,
     isHead,
     isModerator
   };
+};
+
+const getDefaultShiftDmEnabled = (role) => {
+  return String(role ?? "").trim().toLowerCase() === DEFAULT_SHIFT_DM_ROLE;
 };
 
 const verifyScryptPassword = (password, storedHash) => {
@@ -255,12 +264,15 @@ export class BotDatabase {
 
     this.tables = {
       clockSessions: qualify(config.botSchema, "clock_sessions"),
+      discordLinkRequests: qualify(config.botSchema, "discord_link_requests"),
+      discordLinks: qualify(config.botSchema, "discord_links"),
       incidents: qualify(config.botSchema, "incidents"),
       notificationEvents: qualify(config.botSchema, "notification_events"),
       settings: qualify(config.botSchema, "settings"),
       teamRoutes: qualify(config.botSchema, "team_routes"),
       tickets: qualify(config.botSchema, "tickets"),
       trackedShifts: qualify(config.botSchema, "tracked_shifts"),
+      userNotificationPreferences: qualify(config.botSchema, "user_notification_preferences"),
       voiceRooms: qualify(config.botSchema, "voice_rooms"),
       webSessions: qualify(config.botSchema, "web_sessions")
     };
@@ -343,6 +355,33 @@ export class BotDatabase {
         role_id TEXT NOT NULL DEFAULT '',
         channel_id TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS ${this.tables.userNotificationPreferences} (
+        user_id TEXT PRIMARY KEY,
+        shift_dm_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        updated_by TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS ${this.tables.discordLinks} (
+        sonara_user_id TEXT PRIMARY KEY,
+        discord_user_id TEXT NOT NULL UNIQUE,
+        discord_name TEXT NOT NULL DEFAULT '',
+        linked_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT ''
+      );
+
+      CREATE TABLE IF NOT EXISTS ${this.tables.discordLinkRequests} (
+        token_hash TEXT PRIMARY KEY,
+        discord_user_id TEXT NOT NULL,
+        discord_name TEXT NOT NULL DEFAULT '',
+        guild_id TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        consumed_at TEXT,
+        consumed_by_user_id TEXT NOT NULL DEFAULT ''
       );
 
       CREATE TABLE IF NOT EXISTS ${this.tables.trackedShifts} (
@@ -447,6 +486,15 @@ export class BotDatabase {
         ON ${this.tables.clockSessions} (source_time_entry_id)
         WHERE source_time_entry_id IS NOT NULL;
 
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_discord_links_discord_user_id
+        ON ${this.tables.discordLinks} (discord_user_id);
+
+      CREATE INDEX IF NOT EXISTS idx_discord_link_requests_discord_user_id
+        ON ${this.tables.discordLinkRequests} (discord_user_id);
+
+      CREATE INDEX IF NOT EXISTS idx_discord_link_requests_expires_at
+        ON ${this.tables.discordLinkRequests} (expires_at);
+
       CREATE INDEX IF NOT EXISTS idx_tracked_shifts_ends_at
         ON ${this.tables.trackedShifts} (ends_at);
 
@@ -532,6 +580,358 @@ export class BotDatabase {
     await this.pool.query(`DELETE FROM ${this.tables.teamRoutes} WHERE team_key = $1`, [teamKey]);
   }
 
+  async getUserNotificationPreference(userId) {
+    const result = await this.pool.query(
+      `SELECT * FROM ${this.tables.userNotificationPreferences} WHERE user_id = $1`,
+      [String(userId)]
+    );
+    return result.rows[0] ? this.mapUserNotificationPreferenceRow(result.rows[0]) : null;
+  }
+
+  async setUserNotificationPreference({
+    userId,
+    shiftDmEnabled,
+    updatedAt = new Date(),
+    updatedBy = ""
+  }) {
+    await this.pool.query(
+      `
+        INSERT INTO ${this.tables.userNotificationPreferences} (
+          user_id,
+          shift_dm_enabled,
+          updated_by,
+          updated_at
+        ) VALUES ($1, $2, $3, $4)
+        ON CONFLICT(user_id) DO UPDATE SET
+          shift_dm_enabled = EXCLUDED.shift_dm_enabled,
+          updated_by = EXCLUDED.updated_by,
+          updated_at = EXCLUDED.updated_at
+      `,
+      [String(userId), Boolean(shiftDmEnabled), String(updatedBy ?? ""), asIso(updatedAt)]
+    );
+  }
+
+  async createDiscordLinkRequest({
+    discordName = "",
+    discordUserId,
+    expiresAt,
+    guildId = "",
+    source = "discord_slash_command"
+  }) {
+    const token = randomBytes(24).toString("hex");
+    const tokenHash = hashToken(token);
+    const createdAt = asIso();
+    await this.pool.query(
+      `
+        INSERT INTO ${this.tables.discordLinkRequests} (
+          token_hash,
+          discord_user_id,
+          discord_name,
+          guild_id,
+          created_at,
+          expires_at,
+          consumed_at,
+          consumed_by_user_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, NULL, '')
+      `,
+      [
+        tokenHash,
+        String(discordUserId ?? "").trim(),
+        String(discordName ?? "").trim(),
+        String(guildId ?? "").trim(),
+        createdAt,
+        asIso(expiresAt)
+      ]
+    );
+
+    return {
+      createdAt,
+      discordName: String(discordName ?? "").trim(),
+      discordUserId: String(discordUserId ?? "").trim(),
+      expiresAt: asIso(expiresAt),
+      guildId: String(guildId ?? "").trim(),
+      source,
+      token
+    };
+  }
+
+  async getDiscordLinkRequest(token) {
+    const result = await this.pool.query(
+      `SELECT * FROM ${this.tables.discordLinkRequests} WHERE token_hash = $1 LIMIT 1`,
+      [hashToken(token)]
+    );
+    return result.rows[0] ? this.mapDiscordLinkRequestRow(result.rows[0]) : null;
+  }
+
+  async deleteExpiredDiscordLinkRequests(referenceDate = new Date()) {
+    await this.pool.query(
+      `
+        DELETE FROM ${this.tables.discordLinkRequests}
+        WHERE expires_at <= $1 OR consumed_at IS NOT NULL
+      `,
+      [asIso(referenceDate)]
+    );
+  }
+
+  async listHubUsers() {
+    const result = await this.pool.query(
+      this.buildHubUserQuery("TRUE", {
+        limit: false,
+        orderClause: `
+          ORDER BY
+            CASE COALESCE(u.${this.sourceColumns.role}::text, '')
+              WHEN 'admin' THEN 0
+              WHEN 'moderator' THEN 1
+              WHEN 'moderation_lead' THEN 2
+              WHEN 'planner' THEN 3
+              ELSE 4
+            END,
+            LOWER(
+              COALESCE(
+                NULLIF(u.${this.sourceColumns.displayName}::text, ''),
+                ${this.sourceColumns.vrchatName ? `NULLIF(u.${this.sourceColumns.vrchatName}::text, ''),` : ""}
+                NULLIF(u.${this.sourceColumns.login}::text, ''),
+                'user'
+              )
+            ) ASC
+        `
+      })
+    );
+    return result.rows.map((row) => this.mapHubUserRow(row));
+  }
+
+  async findUserByDiscordUserId(discordUserId) {
+    const normalizedDiscordUserId = String(discordUserId ?? "").trim();
+    if (!normalizedDiscordUserId) {
+      return null;
+    }
+
+    const result = await this.pool.query(
+      this.buildHubUserQuery(
+        `
+          COALESCE(u.${this.sourceColumns.discordUserId}::text, '') = $1
+          OR COALESCE(dl.discord_user_id, '') = $1
+        `
+      ),
+      [normalizedDiscordUserId]
+    );
+    return result.rows[0] ? this.mapHubUserRow(result.rows[0]) : null;
+  }
+
+  async completeDiscordLink({
+    actorUserId,
+    discordName = "",
+    discordUserId,
+    source = "self_link",
+    token
+  }) {
+    const tokenHash = hashToken(token);
+    const client = await this.pool.connect();
+    const nowIso = asIso();
+
+    try {
+      await client.query("BEGIN");
+
+      const requestResult = await client.query(
+        `
+          SELECT *
+          FROM ${this.tables.discordLinkRequests}
+          WHERE token_hash = $1
+          LIMIT 1
+        `,
+        [tokenHash]
+      );
+
+      const requestRow = requestResult.rows[0];
+      if (!requestRow) {
+        await client.query("ROLLBACK");
+        return { ok: false, reason: "request_not_found" };
+      }
+
+      const request = this.mapDiscordLinkRequestRow(requestRow);
+      if (request.consumedAt) {
+        await client.query("ROLLBACK");
+        return { ok: false, reason: "request_consumed" };
+      }
+
+      if (Date.parse(request.expiresAt) <= Date.now()) {
+        await client.query("ROLLBACK");
+        return { ok: false, reason: "request_expired" };
+      }
+
+      const sourceConflictResult = await client.query(
+        this.buildHubUserQuery(
+          `
+            COALESCE(u.${this.sourceColumns.discordUserId}::text, '') = $1
+            AND u.${this.sourceColumns.userId}::text <> $2
+          `
+        ),
+        [String(discordUserId ?? "").trim(), String(actorUserId)]
+      );
+      if (sourceConflictResult.rows[0]) {
+        await client.query("ROLLBACK");
+        return {
+          conflictUser: this.mapHubUserRow(sourceConflictResult.rows[0]),
+          ok: false,
+          reason: "discord_conflict"
+        };
+      }
+
+      const mirrorConflictResult = await client.query(
+        `
+          SELECT sonara_user_id
+          FROM ${this.tables.discordLinks}
+          WHERE discord_user_id = $1 AND sonara_user_id <> $2
+          LIMIT 1
+        `,
+        [String(discordUserId ?? "").trim(), String(actorUserId)]
+      );
+      if (mirrorConflictResult.rows[0]) {
+        const conflictUser = await this.getHubUserById(mirrorConflictResult.rows[0].sonara_user_id);
+        await client.query("ROLLBACK");
+        return {
+          conflictUser,
+          ok: false,
+          reason: "discord_conflict"
+        };
+      }
+
+      if (this.sourceColumns.discordName) {
+        await client.query(
+          `
+            UPDATE ${this.sourceTables.users}
+            SET
+              ${this.sourceColumns.discordUserId} = $1,
+              ${this.sourceColumns.discordName} = $2
+            WHERE ${this.sourceColumns.userId}::text = $3
+          `,
+          [
+            String(discordUserId ?? "").trim(),
+            String(discordName ?? "").trim(),
+            String(actorUserId)
+          ]
+        );
+      } else {
+        await client.query(
+          `
+            UPDATE ${this.sourceTables.users}
+            SET ${this.sourceColumns.discordUserId} = $1
+            WHERE ${this.sourceColumns.userId}::text = $2
+          `,
+          [String(discordUserId ?? "").trim(), String(actorUserId)]
+        );
+      }
+
+      await client.query(
+        `
+          INSERT INTO ${this.tables.discordLinks} (
+            sonara_user_id,
+            discord_user_id,
+            discord_name,
+            linked_at,
+            last_seen_at,
+            source
+          ) VALUES ($1, $2, $3, $4, $4, $5)
+          ON CONFLICT(sonara_user_id) DO UPDATE SET
+            discord_user_id = EXCLUDED.discord_user_id,
+            discord_name = EXCLUDED.discord_name,
+            last_seen_at = EXCLUDED.last_seen_at,
+            source = EXCLUDED.source
+        `,
+        [
+          String(actorUserId),
+          String(discordUserId ?? "").trim(),
+          String(discordName ?? "").trim(),
+          nowIso,
+          String(source ?? "self_link")
+        ]
+      );
+
+      await client.query(
+        `
+          UPDATE ${this.tables.discordLinkRequests}
+          SET consumed_at = $1, consumed_by_user_id = $2
+          WHERE token_hash = $3 AND consumed_at IS NULL
+        `,
+        [nowIso, String(actorUserId), tokenHash]
+      );
+
+      await client.query(
+        `
+          UPDATE ${this.tables.trackedShifts}
+          SET discord_user_id = $1
+          WHERE sonara_user_id = $2
+        `,
+        [String(discordUserId ?? "").trim(), String(actorUserId)]
+      );
+
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    return {
+      ok: true,
+      user: await this.getHubUserById(actorUserId)
+    };
+  }
+
+  async unlinkDiscordIdentity({ actorUserId = "", sonaraUserId }) {
+    const client = await this.pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      if (this.sourceColumns.discordName) {
+        await client.query(
+          `
+            UPDATE ${this.sourceTables.users}
+            SET
+              ${this.sourceColumns.discordUserId} = '',
+              ${this.sourceColumns.discordName} = ''
+            WHERE ${this.sourceColumns.userId}::text = $1
+          `,
+          [String(sonaraUserId)]
+        );
+      } else {
+        await client.query(
+          `
+            UPDATE ${this.sourceTables.users}
+            SET ${this.sourceColumns.discordUserId} = ''
+            WHERE ${this.sourceColumns.userId}::text = $1
+          `,
+          [String(sonaraUserId)]
+        );
+      }
+
+      await client.query(
+        `DELETE FROM ${this.tables.discordLinks} WHERE sonara_user_id = $1`,
+        [String(sonaraUserId)]
+      );
+
+      await client.query(
+        `
+          UPDATE ${this.tables.trackedShifts}
+          SET discord_user_id = ''
+          WHERE sonara_user_id = $1
+        `,
+        [String(sonaraUserId)]
+      );
+
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    return this.getHubUserById(sonaraUserId);
+  }
+
   async getHubUserById(userId) {
     const result = await this.pool.query(this.buildHubUserQuery(`u.${this.sourceColumns.userId}::text = $1`), [
       String(userId)
@@ -571,12 +971,7 @@ export class BotDatabase {
 
   async getUpcomingShifts(referenceDate = new Date()) {
     const result = await this.pool.query(
-      `
-        SELECT *
-        FROM ${this.tables.trackedShifts}
-        WHERE ends_at > $1
-        ORDER BY starts_at ASC
-      `,
+      this.buildTrackedShiftQuery(`ts.ends_at > $1`, `ORDER BY ts.starts_at ASC`),
       [asIso(referenceDate)]
     );
     return result.rows.map((row) => this.mapShiftRow(row));
@@ -584,22 +979,17 @@ export class BotDatabase {
 
   async listShiftsForSonaraUser(sonaraUserId, referenceDate = new Date()) {
     const result = await this.pool.query(
-      `
-        SELECT *
-        FROM ${this.tables.trackedShifts}
-        WHERE sonara_user_id = $1 AND ends_at > $2
-        ORDER BY starts_at ASC
-      `,
+      this.buildTrackedShiftQuery(
+        `ts.sonara_user_id = $1 AND ts.ends_at > $2`,
+        `ORDER BY ts.starts_at ASC`
+      ),
       [String(sonaraUserId), asIso(referenceDate)]
     );
     return result.rows.map((row) => this.mapShiftRow(row));
   }
 
   async getShiftById(shiftId) {
-    const result = await this.pool.query(
-      `SELECT * FROM ${this.tables.trackedShifts} WHERE shift_id = $1`,
-      [shiftId]
-    );
+    const result = await this.pool.query(this.buildTrackedShiftQuery(`ts.shift_id = $1`), [shiftId]);
     return result.rows[0] ? this.mapShiftRow(result.rows[0]) : null;
   }
 
@@ -1139,23 +1529,33 @@ export class BotDatabase {
   }
 
   async getDashboardStats(referenceDate = new Date()) {
+    const activeClockQuery = this.sourceColumns.timeEntryShiftId
+      ? `
+          (
+            SELECT COUNT(*)
+            FROM ${this.sourceTables.timeEntries} te
+            WHERE te.${this.sourceColumns.timeEntryCheckOut} IS NULL
+              AND EXISTS (
+                SELECT 1
+                FROM ${this.tables.trackedShifts} ts
+                WHERE ts.shift_id = te.${this.sourceColumns.timeEntryShiftId}::text
+              )
+          ) AS active_clock_count,
+        `
+      : `
+          (SELECT COUNT(*) FROM ${this.tables.clockSessions} WHERE status = 'open') AS active_clock_count,
+        `;
+
     const result = await this.pool.query(
       `
         SELECT
           (SELECT COUNT(*) FROM ${this.tables.trackedShifts} WHERE ends_at > $1) AS upcoming_shift_count,
           (SELECT COUNT(*) FROM ${this.tables.tickets} WHERE status = 'open') AS open_ticket_count,
-          (
-            SELECT COUNT(*)
-            FROM ${this.sourceTables.timeEntries} te
-            INNER JOIN ${this.sourceTables.users} u
-              ON u.${this.sourceColumns.userId} = te.${this.sourceColumns.timeEntryUserId}
-            WHERE te.${this.sourceColumns.timeEntryCheckOut} IS NULL
-              AND u.${this.sourceColumns.role}::text = ANY($2::text[])
-          ) AS active_clock_count,
+          ${activeClockQuery}
           (SELECT COUNT(*) FROM ${this.tables.incidents} WHERE status = 'open') AS open_incident_count,
           (SELECT COUNT(*) FROM ${this.tables.voiceRooms}) AS active_voice_room_count
       `,
-      [asIso(referenceDate), TRACKED_SOURCE_ROLES]
+      [asIso(referenceDate)]
     );
 
     const row = result.rows[0];
@@ -1211,11 +1611,10 @@ export class BotDatabase {
         INNER JOIN ${this.sourceTables.users} u
           ON u.${this.sourceColumns.userId} = s.${this.sourceColumns.shiftMemberId}
         WHERE s.${this.sourceColumns.dateKey} BETWEEN $1::date AND $2::date
-          AND u.${this.sourceColumns.role}::text = ANY($3::text[])
           ${blockedClause}
         ORDER BY s.${this.sourceColumns.dateKey} ASC, s.${this.sourceColumns.shiftStartTime} ASC
       `,
-      [startDateKey, endDateKey, TRACKED_SOURCE_ROLES]
+      [startDateKey, endDateKey]
     );
 
     return result.rows
@@ -1348,7 +1747,7 @@ export class BotDatabase {
     }
   }
 
-  buildHubUserQuery(whereClause) {
+  buildHubUserQuery(whereClause, { limit = true, orderClause = "" } = {}) {
     const blockedClause = this.sourceColumns.blocked
       ? `AND COALESCE(u.${this.sourceColumns.blocked}, FALSE) = FALSE`
       : "";
@@ -1364,12 +1763,38 @@ export class BotDatabase {
           'User ' || u.${this.sourceColumns.userId}::text
         ) AS display_name,
         COALESCE(u.${this.sourceColumns.passwordHash}::text, '') AS password_hash,
-        COALESCE(u.${this.sourceColumns.discordUserId}::text, '') AS discord_user_id,
+        COALESCE(u.${this.sourceColumns.discordUserId}::text, '') AS source_discord_user_id,
+        ${this.sourceColumns.discordName ? `COALESCE(u.${this.sourceColumns.discordName}::text, '')` : "''"} AS source_discord_name,
+        COALESCE(dl.discord_user_id, '') AS linked_discord_user_id,
+        COALESCE(dl.discord_name, '') AS linked_discord_name,
+        pref.shift_dm_enabled AS shift_dm_enabled_override,
         COALESCE(u.${this.sourceColumns.role}::text, '') AS user_role
       FROM ${this.sourceTables.users} u
+      LEFT JOIN ${this.tables.userNotificationPreferences} pref
+        ON pref.user_id = u.${this.sourceColumns.userId}::text
+      LEFT JOIN ${this.tables.discordLinks} dl
+        ON dl.sonara_user_id = u.${this.sourceColumns.userId}::text
       WHERE ${whereClause}
       ${blockedClause}
-      LIMIT 1
+      ${orderClause}
+      ${limit ? "LIMIT 1" : ""}
+    `;
+  }
+
+  buildTrackedShiftQuery(whereClause, orderClause = "") {
+    return `
+      SELECT
+        ts.*,
+        COALESCE(NULLIF(su.${this.sourceColumns.discordUserId}::text, ''), ts.discord_user_id, '') AS effective_discord_user_id,
+        COALESCE(NULLIF(su.${this.sourceColumns.role}::text, ''), ts.user_role, '') AS effective_user_role,
+        pref.shift_dm_enabled AS shift_dm_enabled_override
+      FROM ${this.tables.trackedShifts} ts
+      LEFT JOIN ${this.sourceTables.users} su
+        ON su.${this.sourceColumns.userId}::text = ts.sonara_user_id
+      LEFT JOIN ${this.tables.userNotificationPreferences} pref
+        ON pref.user_id = ts.sonara_user_id
+      WHERE ${whereClause}
+      ${orderClause}
     `;
   }
 
@@ -1398,7 +1823,7 @@ export class BotDatabase {
       isLead: Boolean(row.is_lead),
       moderatorName: String(row.moderator_name ?? "").trim(),
       notes: String(row.notes ?? "").trim(),
-      requiresClocking: TRACKED_SOURCE_ROLES.includes(userRole),
+      requiresClocking: true,
       shiftType: String(row.shift_type ?? "").trim(),
       sonaraUserId: String(row.sonara_user_id ?? "").trim(),
       startsAt,
@@ -1517,40 +1942,72 @@ export class BotDatabase {
   mapHubUserRow(row) {
     const role = String(row.user_role ?? "").trim();
     const flags = toRoleFlags(role);
+    const shiftDmEnabledOverride =
+      row.shift_dm_enabled_override === null || row.shift_dm_enabled_override === undefined
+        ? null
+        : Boolean(row.shift_dm_enabled_override);
+    const sourceDiscordUserId = String(row.source_discord_user_id ?? "").trim();
+    const sourceDiscordName = String(row.source_discord_name ?? "").trim();
+    const linkedDiscordUserId = String(row.linked_discord_user_id ?? "").trim();
+    const linkedDiscordName = String(row.linked_discord_name ?? "").trim();
+    const discordUserId = sourceDiscordUserId || linkedDiscordUserId;
+    const discordName = sourceDiscordName || linkedDiscordName;
+    const shiftDmEnabled =
+      shiftDmEnabledOverride === null ? getDefaultShiftDmEnabled(role) : shiftDmEnabledOverride;
 
     return {
       canAccessHub: flags.canAccessHub,
-      discordUserId: row.discord_user_id || "",
+      discordName,
+      discordUserId,
       displayName: row.display_name,
+      hasDiscordLink: Boolean(discordUserId),
+      hasDiscordSyncMismatch:
+        Boolean(sourceDiscordUserId) && Boolean(linkedDiscordUserId) && sourceDiscordUserId !== linkedDiscordUserId,
       id: row.user_id,
       isAdmin: flags.isAdmin,
       isHead: flags.isHead,
       isModerator: flags.isModerator,
+      linkedDiscordName,
+      linkedDiscordUserId,
       loginName: row.login_name,
       role,
       roleKeys: role ? [role] : [],
-      roleNames: role ? [humanizeRole(role)] : []
+      roleNames: role ? [humanizeRole(role)] : [],
+      shiftDmEnabled,
+      shiftDmEnabledOverride,
+      shiftDmStateLabel: shiftDmEnabled ? "aktiv" : "deaktiviert",
+      shouldReceiveShiftDm: shiftDmEnabled && Boolean(discordUserId),
+      sourceDiscordName,
+      sourceDiscordUserId
     };
   }
 
   mapShiftRow(row) {
-    const userRole = String(row.user_role ?? "").trim().toLowerCase();
+    const userRole = String(row.effective_user_role ?? row.user_role ?? "").trim().toLowerCase();
+    const shiftDmEnabledOverride =
+      row.shift_dm_enabled_override === null || row.shift_dm_enabled_override === undefined
+        ? null
+        : Boolean(row.shift_dm_enabled_override);
+    const shiftDmEnabled =
+      shiftDmEnabledOverride === null ? getDefaultShiftDmEnabled(userRole) : shiftDmEnabledOverride;
+    const discordUserId = String(row.effective_discord_user_id ?? row.discord_user_id ?? "").trim();
 
     return {
-      discordUserId: row.discord_user_id,
+      discordUserId,
       endsAt: row.ends_at,
       id: row.shift_id,
       isLead: Boolean(row.is_lead),
-      isReminderAudience: userRole === "moderator",
+      isReminderAudience: shiftDmEnabled,
       moderatorName: row.moderator_name,
       notes: row.notes,
       requiresClocking: Boolean(row.requires_clocking),
       shiftType: row.shift_type ?? "",
-      shouldSendDm: userRole === "moderator" && Boolean(row.discord_user_id),
+      shouldSendDm: shiftDmEnabled && Boolean(discordUserId),
       sonaraUserId: row.sonara_user_id,
       startsAt: row.starts_at,
       task: row.task ?? "",
       teamKey: row.team_key,
+      shiftDmEnabled,
       updatedAt: row.updated_at,
       userRole,
       world: row.world ?? ""
@@ -1607,6 +2064,28 @@ export class BotDatabase {
       emptySince: row.empty_since,
       invitedUserIds: row.invited_user_ids ? row.invited_user_ids.split(",").filter(Boolean) : [],
       ownerId: row.owner_id
+    };
+  }
+
+  mapUserNotificationPreferenceRow(row) {
+    return {
+      shiftDmEnabled: Boolean(row.shift_dm_enabled),
+      updatedAt: row.updated_at,
+      updatedBy: row.updated_by,
+      userId: row.user_id
+    };
+  }
+
+  mapDiscordLinkRequestRow(row) {
+    return {
+      consumedAt: row.consumed_at,
+      consumedByUserId: row.consumed_by_user_id,
+      createdAt: row.created_at,
+      discordName: row.discord_name,
+      discordUserId: row.discord_user_id,
+      expiresAt: row.expires_at,
+      guildId: row.guild_id,
+      tokenHash: row.token_hash
     };
   }
 }
