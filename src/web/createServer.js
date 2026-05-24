@@ -3,7 +3,10 @@ import express from "express";
 import { SETTINGS_FORM_FIELDS } from "../store/settings.js";
 import {
   renderDiscordLinkPage,
+  renderAdminAdvancedPage,
+  renderAdminDiscordPage,
   renderAdminPage,
+  renderAdminShiftsPage,
   renderErrorPage,
   renderHubPage,
   renderLoginPage
@@ -309,9 +312,68 @@ export const createServer = ({ client, config, database, runtime }) => {
         flashMessage: flashState.message,
         flashTone: flashState.tone,
         settings: adminData.settings,
-        teamRoutes: adminData.teamRoutes,
+        user: request.hubUser
+      })
+    );
+  }));
+
+  app.get("/hub/admin/shifts", asyncHandler(requireAdmin), asyncHandler(async (request, response) => {
+    const flashState = mapHubFlash({
+      flash: request.query.flash,
+      tone: request.query.tone
+    });
+    const adminData = await runtime.getAdminHubData();
+
+    response.send(
+      renderAdminShiftsPage({
+        botName: "Sonara Operations Bot",
+        diagnostics: adminData.diagnostics,
+        flashMessage: flashState.message,
+        flashTone: flashState.tone,
+        notificationEvents: adminData.notificationEvents,
+        settings: adminData.settings,
+        shifts: adminData.shifts,
         user: request.hubUser,
         users: adminData.users
+      })
+    );
+  }));
+
+  app.get("/hub/admin/discord", asyncHandler(requireAdmin), asyncHandler(async (request, response) => {
+    const flashState = mapHubFlash({
+      flash: request.query.flash,
+      tone: request.query.tone
+    });
+    const adminData = await runtime.getAdminHubData();
+
+    response.send(
+      renderAdminDiscordPage({
+        botName: "Sonara Operations Bot",
+        diagnostics: adminData.diagnostics,
+        flashMessage: flashState.message,
+        flashTone: flashState.tone,
+        settings: adminData.settings,
+        user: request.hubUser
+      })
+    );
+  }));
+
+  app.get("/hub/admin/advanced", asyncHandler(requireAdmin), asyncHandler(async (request, response) => {
+    const flashState = mapHubFlash({
+      flash: request.query.flash,
+      tone: request.query.tone
+    });
+    const adminData = await runtime.getAdminHubData();
+
+    response.send(
+      renderAdminAdvancedPage({
+        botName: "Sonara Operations Bot",
+        diagnostics: adminData.diagnostics,
+        flashMessage: flashState.message,
+        flashTone: flashState.tone,
+        settings: adminData.settings,
+        teamRoutes: adminData.teamRoutes,
+        user: request.hubUser
       })
     );
   }));
@@ -578,13 +640,14 @@ export const createServer = ({ client, config, database, runtime }) => {
 
     await database.setManySettings(nextSettings);
     await runtime.refreshSettings();
-    response.redirect("/hub/admin?flash=Konfiguration gespeichert.&tone=success");
+    const redirectTo = normalizeLocalRedirect(request.body.redirectTo, "/hub/admin");
+    response.redirect(`${redirectTo}?flash=Konfiguration gespeichert.&tone=success`);
   }));
 
   app.post("/hub/admin/users/:userId/dm-preferences", asyncHandler(requireAdmin), asyncHandler(async (request, response) => {
     const targetUserId = String(request.params.userId ?? "").trim();
     if (!targetUserId) {
-      response.redirect("/hub/admin?flash=Sonara-User-ID fehlt.&tone=error");
+      response.redirect("/hub/admin/shifts?flash=Sonara-User-ID fehlt.&tone=error");
       return;
     }
 
@@ -596,7 +659,7 @@ export const createServer = ({ client, config, database, runtime }) => {
     });
 
     response.redirect(
-      `/hub/admin?flash=${encodeURIComponent(
+      `/hub/admin/shifts?flash=${encodeURIComponent(
         enabled ? "Schicht-DMs aktiviert." : "Schicht-DMs deaktiviert."
       )}&tone=success`
     );
@@ -605,7 +668,7 @@ export const createServer = ({ client, config, database, runtime }) => {
   app.post("/hub/admin/users/:userId/unlink-discord", asyncHandler(requireAdmin), asyncHandler(async (request, response) => {
     const targetUserId = String(request.params.userId ?? "").trim();
     if (!targetUserId) {
-      response.redirect("/hub/admin?flash=Sonara-User-ID fehlt.&tone=error");
+      response.redirect("/hub/admin/shifts?flash=Sonara-User-ID fehlt.&tone=error");
       return;
     }
 
@@ -614,13 +677,14 @@ export const createServer = ({ client, config, database, runtime }) => {
       updatedBy: request.hubUser.id
     });
 
-    response.redirect("/hub/admin?flash=Discord-Verknuepfung entfernt.&tone=success");
+    response.redirect("/hub/admin/shifts?flash=Discord-Verknuepfung entfernt.&tone=success");
   }));
 
   app.post("/hub/admin/team-routes/save", asyncHandler(requireAdmin), asyncHandler(async (request, response) => {
     const teamKey = String(request.body.teamKey ?? "").trim();
+    const redirectTo = normalizeLocalRedirect(request.body.redirectTo, "/hub/admin/advanced");
     if (!teamKey) {
-      response.redirect("/hub/admin?flash=teamKey fehlt.&tone=error");
+      response.redirect(`${redirectTo}?flash=teamKey fehlt.&tone=error`);
       return;
     }
 
@@ -630,16 +694,17 @@ export const createServer = ({ client, config, database, runtime }) => {
       teamKey
     });
 
-    response.redirect("/hub/admin?flash=Team-Route gespeichert.&tone=success");
+    response.redirect(`${redirectTo}?flash=Team-Route gespeichert.&tone=success`);
   }));
 
   app.post("/hub/admin/team-routes/delete", asyncHandler(requireAdmin), asyncHandler(async (request, response) => {
     const teamKey = String(request.body.teamKey ?? "").trim();
+    const redirectTo = normalizeLocalRedirect(request.body.redirectTo, "/hub/admin/advanced");
     if (teamKey) {
       await database.deleteTeamRoute(teamKey);
     }
 
-    response.redirect("/hub/admin?flash=Team-Route entfernt.&tone=success");
+    response.redirect(`${redirectTo}?flash=Team-Route entfernt.&tone=success`);
   }));
 
   app.post("/hub/admin/actions/refresh-shifts", asyncHandler(requireAdmin), asyncHandler(async (_request, response) => {

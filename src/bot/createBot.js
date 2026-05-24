@@ -827,21 +827,35 @@ export const createBot = ({ config, database }) => {
         for (const minutesBefore of settings.reminderMinutesBefore) {
           const eventKey = `pre-${minutesBefore}`;
           const reminderAt = startTime - minutesBefore * 60_000;
+          if (await database.hasNotification(shift.id, eventKey)) {
+            continue;
+          }
+
+          if (now >= startTime) {
+            await database.markNotification(shift.id, eventKey, new Date());
+            continue;
+          }
+
           if (
             now >= reminderAt &&
-            now <= reminderAt + 120_000 &&
-            !(await database.hasNotification(shift.id, eventKey))
+            now < startTime
           ) {
             await sendShiftNotification({ shift, type: eventKey });
           }
         }
 
+        const startReminderExpiresAt = startTime + settings.checkinGraceMinutes * 60_000;
         if (
           now >= startTime &&
-          now <= startTime + 120_000 &&
+          now <= startReminderExpiresAt &&
           !(await database.hasNotification(shift.id, "dm-start"))
         ) {
           await sendShiftNotification({ shift, type: "start" });
+        } else if (
+          now > startReminderExpiresAt &&
+          !(await database.hasNotification(shift.id, "dm-start"))
+        ) {
+          await database.markNotification(shift.id, "dm-start", new Date());
         }
 
         if (
@@ -1361,13 +1375,18 @@ export const createBot = ({ config, database }) => {
     },
     async getAdminHubData() {
       const settings = await getSettings();
+      const shifts = await database.getUpcomingShifts();
       return {
         diagnostics: {
           missingSettings: await getMissingSettings(),
           settings,
           stats: await database.getDashboardStats(new Date())
         },
+        notificationEvents: await database.listNotificationEventsForShifts(
+          shifts.map((shift) => shift.id)
+        ),
         settings,
+        shifts,
         teamRoutes: await database.listTeamRoutes(),
         users: await database.listHubUsers()
       };

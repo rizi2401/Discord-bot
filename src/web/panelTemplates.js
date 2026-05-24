@@ -55,6 +55,7 @@ const routeRow = (route) => {
       <td>
         <form method="post" action="/hub/admin/team-routes/delete">
           <input type="hidden" name="teamKey" value="${escapeHtml(route.teamKey)}" />
+          <input type="hidden" name="redirectTo" value="/hub/admin/advanced" />
           <button type="submit" class="danger">Entfernen</button>
         </form>
       </td>
@@ -65,8 +66,10 @@ const routeRow = (route) => {
 const hubUserRow = (user) => {
   const discordState = user.hasDiscordLink
     ? [
-        user.discordName ? escapeHtml(user.discordName) : "Discord",
-        user.discordUserId ? `<code>${escapeHtml(user.discordUserId)}</code>` : "",
+        user.discordName ? `<strong>${escapeHtml(user.discordName)}</strong>` : "<strong>Discord</strong>",
+        `<span class="muted">DM-ID:</span> ${user.discordUserId ? `<code>${escapeHtml(user.discordUserId)}</code>` : '<span class="warn-text">fehlt</span>'}`,
+        `<span class="muted">Sonara:</span> ${user.sourceDiscordUserId ? `<code>${escapeHtml(user.sourceDiscordUserId)}</code>` : "-"}`,
+        `<span class="muted">Bot-Link:</span> ${user.linkedDiscordUserId ? `<code>${escapeHtml(user.linkedDiscordUserId)}</code>` : "-"}`,
         user.hasDiscordSyncMismatch ? `<span class="pill">Sync-Mismatch</span>` : ""
       ]
         .filter(Boolean)
@@ -167,6 +170,9 @@ const shell = ({ body, title }) => {
       .hero, .panel, .notice {
         padding: 22px;
       }
+      .panel.compact {
+        padding: 18px;
+      }
       .hero h1, .panel h2, .panel h3 {
         margin-top: 0;
       }
@@ -179,10 +185,33 @@ const shell = ({ body, title }) => {
       .flash.success { border-color: rgba(109, 230, 194, 0.45); }
       .flash.error { border-color: rgba(255, 141, 141, 0.55); }
       .flash.warn { border-color: rgba(255, 207, 119, 0.55); }
+      .warn-text { color: var(--warning); }
       .grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
         gap: 12px;
+      }
+      .nav-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 12px;
+      }
+      .nav-card {
+        display: block;
+        min-height: 138px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel-2);
+        padding: 16px;
+        color: var(--text);
+      }
+      .nav-card strong {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 18px;
+      }
+      .nav-card span {
+        color: var(--muted);
       }
       .two-col {
         display: grid;
@@ -280,10 +309,33 @@ const shell = ({ body, title }) => {
         width: 100%;
         border-collapse: collapse;
       }
+      .table-scroll {
+        overflow-x: auto;
+      }
       th, td {
         text-align: left;
         padding: 10px;
         border-bottom: 1px solid var(--line);
+        vertical-align: top;
+      }
+      th {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .status-list {
+        display: grid;
+        gap: 10px;
+      }
+      .status-row {
+        display: grid;
+        grid-template-columns: minmax(150px, 1fr) minmax(180px, 2fr);
+        gap: 10px;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 10px;
+      }
+      .status-row:last-child {
+        border-bottom: 0;
+        padding-bottom: 0;
       }
       .shift-list {
         display: grid;
@@ -309,6 +361,7 @@ const shell = ({ body, title }) => {
       }
       @media (max-width: 920px) {
         .two-col { grid-template-columns: 1fr; }
+        .status-row { grid-template-columns: 1fr; }
       }
     </style>
   </head>
@@ -513,26 +566,55 @@ export const renderDiscordLinkPage = ({
   return shell({ body, title: `${botName} Discord-Verknuepfung` });
 };
 
-export const renderAdminPage = ({
-  botName,
-  diagnostics,
-  flashMessage = "",
-  flashTone = "success",
-  settings,
-  teamRoutes,
-  user,
-  users
-}) => {
-  const missingSettingsNotice = diagnostics.missingSettings.length
-    ? `
-      <section class="notice">
-        <h2>Offene Konfigurationsluecken</h2>
-        <p>${escapeHtml(diagnostics.missingSettings.join(", "))}</p>
-      </section>
-    `
-    : "";
+const SETTING_LABELS = {
+  adminRoleIds: "Admin-Rollen",
+  checkinGraceMinutes: "Check-in-Frist",
+  checkoutGraceMinutes: "Check-out-Frist",
+  headModChannelId: "Head-Mod-Kanal",
+  headModRoleId: "Head-Mod-Rolle",
+  hubIntroText: "Text oben im Hub",
+  incidentLogChannelId: "Vorfall-Log",
+  joinLeaveLogChannelId: "Join/Leave-Log",
+  leadershipRoleIds: "Leitungsrollen",
+  memberRoleId: "Mitgliederrolle",
+  onboardingRoleId: "Onboarding-Rolle",
+  reminderChannelId: "Reminder-/Fallback-Kanal",
+  reminderMinutesBefore: "Reminder vorher",
+  rulesChannelId: "Regel-Kanal",
+  shiftLogChannelId: "Schicht-/Clock-Log",
+  supportRoleIds: "Support-Rollen",
+  teamSummaryIntro: "Team-Benachrichtigung",
+  ticketCategoryId: "Ticket-Kategorie",
+  ticketLogChannelId: "Ticket-Log",
+  verificationLogChannelId: "Verify-Log",
+  verifyPanelChannelId: "Verify-Panel-Kanal",
+  voiceCategoryId: "Voice-Kategorie",
+  voiceLogChannelId: "Voice-Log",
+  voicePanelChannelId: "Voice-Panel-Kanal",
+  voiceRoomIdleMinutes: "Voice-Leerlauf"
+};
 
-  const body = `
+const renderSettingField = ({ name, settings }) => {
+  const value = settings.raw[name] ?? "";
+  if (name === "hubIntroText" || name === "teamSummaryIntro") {
+    return textareaInput({ label: SETTING_LABELS[name] ?? name, name, value });
+  }
+
+  return textInput({ label: SETTING_LABELS[name] ?? name, name, value });
+};
+
+const renderSettingsForm = ({ fields, redirectTo, settings, submitLabel }) => {
+  return `
+    <form method="post" action="/hub/admin/settings/general">
+      <input type="hidden" name="redirectTo" value="${escapeHtml(redirectTo)}" />
+      ${fields.map((name) => renderSettingField({ name, settings })).join("")}
+      <button type="submit">${escapeHtml(submitLabel)}</button>
+    </form>
+  `;
+};
+
+const adminHeader = ({ botName, settings, user }) => {
+  return `
     <section class="hero">
       <div class="toolbar">
         <div>
@@ -540,7 +622,7 @@ export const renderAdminPage = ({
           <p>${escapeHtml(settings.hubIntroText || "")}</p>
         </div>
         <div class="actions" style="min-width: 320px;">
-          <a href="/hub"><button class="secondary">Zum Moderator-Hub</button></a>
+          <a href="/hub"><button class="secondary">Moderator-Hub</button></a>
           <form method="post" action="/auth/logout">
             <button type="submit" class="secondary">Abmelden</button>
           </form>
@@ -549,8 +631,71 @@ export const renderAdminPage = ({
       <div class="pill">Angemeldet als ${escapeHtml(user.displayName)}</div>
       <div class="pill">Letzter Source-Sync: ${escapeHtml(formatDate(settings.raw.lastSourceSyncAt))}</div>
     </section>
-    ${flash(flashMessage, flashTone)}
-    ${missingSettingsNotice}
+  `;
+};
+
+const adminNav = () => {
+  return `
+    <section class="panel compact">
+      <div class="nav-grid">
+        <a class="nav-card" href="/hub/admin/shifts">
+          <strong>Schichten & DMs</strong>
+          <span>Benutzer, Discord-Verknuepfungen, DM-Schalter und Reminder-Status.</span>
+        </a>
+        <a class="nav-card" href="/hub/admin/discord">
+          <strong>Kanaele & Rollen</strong>
+          <span>Die wichtigsten Discord-Ziele fuer Welcome, Regeln, Reminder und Leitung.</span>
+        </a>
+        <a class="nav-card" href="/hub/admin/advanced">
+          <strong>Erweitert</strong>
+          <span>Tickets, Voice, Logs, Team-Routing und technische Texte.</span>
+        </a>
+      </div>
+    </section>
+  `;
+};
+
+const missingSettingsNotice = (diagnostics) => {
+  return diagnostics.missingSettings.length
+    ? `
+      <section class="notice">
+        <h2>Offene Konfigurationsluecken</h2>
+        <p>${escapeHtml(diagnostics.missingSettings.join(", "))}</p>
+      </section>
+    `
+    : "";
+};
+
+const adminShell = ({
+  botName,
+  body,
+  diagnostics,
+  flashMessage = "",
+  flashTone = "success",
+  settings,
+  title,
+  user
+}) => {
+  return shell({
+    body: `
+      ${adminHeader({ botName, settings, user })}
+      ${flash(flashMessage, flashTone)}
+      ${missingSettingsNotice(diagnostics)}
+      ${body}
+    `,
+    title: `${botName} ${title}`
+  });
+};
+
+export const renderAdminPage = ({
+  botName,
+  diagnostics,
+  flashMessage = "",
+  flashTone = "success",
+  settings,
+  user
+}) => {
+  const body = `
     <section class="panel">
       <h2>Status</h2>
       <div class="grid">
@@ -564,91 +709,242 @@ export const renderAdminPage = ({
         <button type="submit" class="secondary">Sonara-Schichten jetzt neu einlesen</button>
       </form>
     </section>
-    <div class="two-col">
-      <section class="panel">
-        <h2>Discord-Konfiguration</h2>
-        <form method="post" action="/hub/admin/settings/general">
-          ${textInput({ label: "Welcome-Kanal-ID", name: "welcomeChannelId", value: settings.raw.welcomeChannelId })}
-          ${textInput({ label: "Regel-Kanal-ID", name: "rulesChannelId", value: settings.raw.rulesChannelId })}
-          ${textInput({ label: "Verify-Panel-Kanal-ID", name: "verifyPanelChannelId", value: settings.raw.verifyPanelChannelId })}
-          ${textInput({ label: "Mitgliederrolle-ID", name: "memberRoleId", value: settings.raw.memberRoleId })}
-          ${textInput({ label: "Onboarding-Rolle-ID", name: "onboardingRoleId", value: settings.raw.onboardingRoleId })}
-          ${textInput({ label: "Ticket-Kategorie-ID", name: "ticketCategoryId", value: settings.raw.ticketCategoryId })}
-          ${textInput({ label: "Support-Rollen (Komma-getrennt)", name: "supportRoleIds", value: settings.raw.supportRoleIds })}
-          ${textInput({ label: "Leitungsrollen (Komma-getrennt)", name: "leadershipRoleIds", value: settings.raw.leadershipRoleIds })}
-          ${textInput({ label: "Discord-Admin-Rollen (Komma-getrennt)", name: "adminRoleIds", value: settings.raw.adminRoleIds })}
-          ${textInput({ label: "Voice-Kategorie-ID", name: "voiceCategoryId", value: settings.raw.voiceCategoryId })}
-          ${textInput({ label: "Voice-Panel-Kanal-ID", name: "voicePanelChannelId", value: settings.raw.voicePanelChannelId })}
-          ${textInput({ label: "Reminder-/Fallback-Kanal-ID", name: "reminderChannelId", value: settings.raw.reminderChannelId })}
-          ${textInput({ label: "Head-Mod-Kanal-ID", name: "headModChannelId", value: settings.raw.headModChannelId })}
-          ${textInput({ label: "Head-Mod-Rolle-ID", name: "headModRoleId", value: settings.raw.headModRoleId })}
-          ${textInput({ label: "Join/Leave-Log-Kanal-ID", name: "joinLeaveLogChannelId", value: settings.raw.joinLeaveLogChannelId })}
-          ${textInput({ label: "Verify-Log-Kanal-ID", name: "verificationLogChannelId", value: settings.raw.verificationLogChannelId })}
-          ${textInput({ label: "Ticket-Log-Kanal-ID", name: "ticketLogChannelId", value: settings.raw.ticketLogChannelId })}
-          ${textInput({ label: "Voice-Log-Kanal-ID", name: "voiceLogChannelId", value: settings.raw.voiceLogChannelId })}
-          ${textInput({ label: "Schicht-/Clock-Log-Kanal-ID", name: "shiftLogChannelId", value: settings.raw.shiftLogChannelId })}
-          ${textInput({ label: "Incident-Log-Kanal-ID", name: "incidentLogChannelId", value: settings.raw.incidentLogChannelId })}
-          ${textInput({ label: "Reminder-Minuten vorher", name: "reminderMinutesBefore", value: settings.raw.reminderMinutesBefore })}
-          ${textInput({ label: "Check-in-Gnadenfrist (Minuten)", name: "checkinGraceMinutes", value: settings.raw.checkinGraceMinutes })}
-          ${textInput({ label: "Check-out-Gnadenfrist (Minuten)", name: "checkoutGraceMinutes", value: settings.raw.checkoutGraceMinutes })}
-          ${textInput({ label: "Voice-Raum-Leerlauf (Minuten)", name: "voiceRoomIdleMinutes", value: settings.raw.voiceRoomIdleMinutes })}
-          ${textareaInput({ label: "Hub-Infotext", name: "hubIntroText", value: settings.raw.hubIntroText })}
-          ${textareaInput({ label: "Team-Benachrichtigungs-Text", name: "teamSummaryIntro", value: settings.raw.teamSummaryIntro })}
-          <button type="submit">Discord-Konfiguration speichern</button>
-        </form>
-      </section>
-      <section class="panel">
-        <h2>Team-Routing</h2>
-        <p class="muted">Aktuell wird als <code>teamKey</code> direkt der Sonara-<code>users.role</code>-Wert verwendet, zum Beispiel <code>moderator</code>.</p>
+    ${adminNav()}
+  `;
+
+  return adminShell({
+    body,
+    botName,
+    diagnostics,
+    flashMessage,
+    flashTone,
+    settings,
+    title: "Admin-Hub",
+    user
+  });
+};
+
+const buildReminderStatusRows = ({ notificationEvents, settings, shifts }) => {
+  const eventsByShift = new Map();
+  for (const event of notificationEvents) {
+    const events = eventsByShift.get(event.shiftId) ?? [];
+    events.push(event);
+    eventsByShift.set(event.shiftId, events);
+  }
+
+  const now = Date.now();
+  return shifts.slice(0, 20).map((shift) => {
+    const events = eventsByShift.get(shift.id) ?? [];
+    const startTime = Date.parse(shift.startsAt);
+    const nextReminder = settings.reminderMinutesBefore
+      .map((minutes) => ({
+        eventKey: `pre-${minutes}`,
+        label: `${minutes} Min. vorher`,
+        dueAt: startTime - minutes * 60_000
+      }))
+      .find((item) => !events.some((event) => event.eventKey === item.eventKey) && now < startTime);
+    const latestEvent = events[0];
+
+    return `
+      <div class="status-row">
+        <div>
+          <strong>${escapeHtml(shift.moderatorName)}</strong><br />
+          <span class="muted">${escapeHtml(formatDate(shift.startsAt))}</span>
+        </div>
+        <div>
+          <div>${shift.discordUserId ? `DM-ID <code>${escapeHtml(shift.discordUserId)}</code>` : '<span class="warn-text">Discord-ID fehlt</span>'}</div>
+          <div class="muted">Naechster Reminder: ${nextReminder ? `${escapeHtml(nextReminder.label)} (${escapeHtml(formatDate(nextReminder.dueAt))})` : "keiner offen"}</div>
+          <div class="muted">Letzter Status: ${latestEvent ? `${escapeHtml(latestEvent.eventKey)} um ${escapeHtml(formatDate(latestEvent.sentAt))}` : "noch nichts gesendet"}</div>
+        </div>
+      </div>
+    `;
+  }).join("");
+};
+
+export const renderAdminShiftsPage = ({
+  botName,
+  diagnostics,
+  flashMessage = "",
+  flashTone = "success",
+  notificationEvents,
+  settings,
+  shifts,
+  user,
+  users
+}) => {
+  const missingDiscordUsers = users.filter((item) => item.shiftDmEnabled && !item.discordUserId).length;
+  const body = `
+    ${adminNav()}
+    <section class="panel">
+      <h2>Schichten & DMs</h2>
+      <div class="grid">
+        ${card("DMs ohne Discord-ID", missingDiscordUsers)}
+        ${card("Kommende Schichten", shifts.length)}
+        ${card("Reminder", settings.raw.reminderMinutesBefore, "Minuten vor Schichtbeginn")}
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Benutzer und Schicht-DMs</h2>
+      <p class="muted">Die DM-ID ist die ID, die der Bot wirklich fuer Nachrichten nutzt. Bot-Link greift als Fallback, wenn Sonara leer ist.</p>
+      <div class="table-scroll">
         <table>
           <thead>
             <tr>
-              <th>teamKey</th>
+              <th>Sonara</th>
               <th>Rolle</th>
-              <th>Kanal</th>
-              <th>Aktion</th>
+              <th>Discord</th>
+              <th>Schicht-DMs</th>
+              <th>Aktionen</th>
             </tr>
           </thead>
           <tbody>
-            ${teamRoutes.length ? teamRoutes.map(routeRow).join("") : "<tr><td colspan=\"4\">Noch keine Team-Routen angelegt.</td></tr>"}
+            ${users.length ? users.map(hubUserRow).join("") : "<tr><td colspan=\"5\">Noch keine Sonara-Nutzer gefunden.</td></tr>"}
           </tbody>
         </table>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Reminder-Status</h2>
+      <div class="status-list">
+        ${shifts.length ? buildReminderStatusRows({ notificationEvents, settings, shifts }) : "<p class=\"muted\">Keine kommenden Schichten gefunden.</p>"}
+      </div>
+    </section>
+  `;
+
+  return adminShell({
+    body,
+    botName,
+    diagnostics,
+    flashMessage,
+    flashTone,
+    settings,
+    title: "Schichten",
+    user
+  });
+};
+
+export const renderAdminDiscordPage = ({
+  botName,
+  diagnostics,
+  flashMessage = "",
+  flashTone = "success",
+  settings,
+  user
+}) => {
+  const body = `
+    ${adminNav()}
+    <section class="panel" style="max-width: 760px;">
+      <h2>Kanaele & Rollen</h2>
+      <p class="muted">Nur die wichtigsten Ziele fuer Betrieb, Regeln und Schichtmeldungen.</p>
+      ${renderSettingsForm({
+        fields: [
+          "welcomeChannelId",
+          "rulesChannelId",
+          "memberRoleId",
+          "reminderChannelId",
+          "headModChannelId",
+          "headModRoleId",
+          "adminRoleIds",
+          "supportRoleIds",
+          "leadershipRoleIds",
+          "reminderMinutesBefore",
+          "checkinGraceMinutes",
+          "checkoutGraceMinutes"
+        ],
+        redirectTo: "/hub/admin/discord",
+        settings,
+        submitLabel: "Kanaele & Rollen speichern"
+      })}
+    </section>
+  `;
+
+  return adminShell({
+    body,
+    botName,
+    diagnostics,
+    flashMessage,
+    flashTone,
+    settings,
+    title: "Kanaele",
+    user
+  });
+};
+
+export const renderAdminAdvancedPage = ({
+  botName,
+  diagnostics,
+  flashMessage = "",
+  flashTone = "success",
+  settings,
+  teamRoutes,
+  user
+}) => {
+  const body = `
+    ${adminNav()}
+    <div class="two-col">
+      <section class="panel">
+        <h2>Erweiterte Discord-Felder</h2>
+        ${renderSettingsForm({
+          fields: [
+            "verifyPanelChannelId",
+            "onboardingRoleId",
+            "ticketCategoryId",
+            "voiceCategoryId",
+            "voicePanelChannelId",
+            "joinLeaveLogChannelId",
+            "verificationLogChannelId",
+            "ticketLogChannelId",
+            "voiceLogChannelId",
+            "shiftLogChannelId",
+            "incidentLogChannelId",
+            "voiceRoomIdleMinutes",
+            "hubIntroText",
+            "teamSummaryIntro"
+          ],
+          redirectTo: "/hub/admin/advanced",
+          settings,
+          submitLabel: "Erweiterte Einstellungen speichern"
+        })}
+      </section>
+      <section class="panel">
+        <h2>Team-Routing</h2>
+        <p class="muted">teamKey ist aktuell der Sonara-Rollenwert, zum Beispiel <code>moderator</code>.</p>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>teamKey</th>
+                <th>Rolle</th>
+                <th>Kanal</th>
+                <th>Aktion</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${teamRoutes.length ? teamRoutes.map(routeRow).join("") : "<tr><td colspan=\"4\">Noch keine Team-Routen angelegt.</td></tr>"}
+            </tbody>
+          </table>
+        </div>
         <form method="post" action="/hub/admin/team-routes/save" style="margin-top: 18px;">
+          <input type="hidden" name="redirectTo" value="/hub/admin/advanced" />
           <div class="inline-form">
-            ${textInput({ label: "teamKey", name: "teamKey", placeholder: "moderation" })}
+            ${textInput({ label: "teamKey", name: "teamKey", placeholder: "moderator" })}
             ${textInput({ label: "Rollen-ID", name: "roleId", placeholder: "1234567890" })}
             ${textInput({ label: "Kanal-ID", name: "channelId", placeholder: "1234567890" })}
           </div>
           <button type="submit">Team-Route speichern</button>
         </form>
-        <h3 style="margin-top: 26px;">Hinweise</h3>
-        <p class="muted">Verify-, Ticket- und Voice-Panels postest du weiterhin direkt im Discord-Server ueber <code>/panel-posten</code>.</p>
-        <div>
-          <span class="pill">Sonara-Login</span>
-          <span class="pill">Shared Postgres</span>
-          <span class="pill">Separater Bot-Service</span>
-        </div>
       </section>
     </div>
-    <section class="panel">
-      <h2>Benutzer und Schicht-DMs</h2>
-      <p class="muted">Hier steuerst du pro Sonara-Konto, ob Schicht-DMs aktiv sind. Die Discord-Verknuepfung kommt aus dem Self-Link-Flow ueber <code>/verknuepfen</code>.</p>
-      <table>
-        <thead>
-          <tr>
-            <th>Sonara</th>
-            <th>Rolle</th>
-            <th>Discord</th>
-            <th>Schicht-DMs</th>
-            <th>Aktionen</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${users.length ? users.map(hubUserRow).join("") : "<tr><td colspan=\"5\">Noch keine Sonara-Nutzer gefunden.</td></tr>"}
-        </tbody>
-      </table>
-    </section>
   `;
 
-  return shell({ body, title: `${botName} Admin-Hub` });
+  return adminShell({
+    body,
+    botName,
+    diagnostics,
+    flashMessage,
+    flashTone,
+    settings,
+    title: "Erweitert",
+    user
+  });
 };

@@ -223,7 +223,7 @@ const shiftChanged = (left, right) => {
     left.user_role !== right.userRole ||
     left.team_key !== right.teamKey ||
     left.moderator_name !== right.moderatorName ||
-    left.discord_user_id !== right.discordUserId ||
+    (left.discord_user_id || "") !== (right.discordUserId || "") ||
     left.starts_at !== right.startsAt ||
     left.ends_at !== right.endsAt ||
     left.notes !== right.notes ||
@@ -671,6 +671,29 @@ export class BotDatabase {
       `,
       [asIso(referenceDate)]
     );
+  }
+
+  async listNotificationEventsForShifts(shiftIds = []) {
+    const ids = shiftIds.map((id) => String(id ?? "").trim()).filter(Boolean);
+    if (ids.length === 0) {
+      return [];
+    }
+
+    const result = await this.pool.query(
+      `
+        SELECT shift_id, event_key, sent_at
+        FROM ${this.tables.notificationEvents}
+        WHERE shift_id = ANY($1::text[])
+        ORDER BY sent_at DESC
+      `,
+      [ids]
+    );
+
+    return result.rows.map((row) => ({
+      eventKey: row.event_key,
+      sentAt: row.sent_at,
+      shiftId: row.shift_id
+    }));
   }
 
   async listHubUsers() {
@@ -1597,7 +1620,7 @@ export class BotDatabase {
             NULLIF(u.${this.sourceColumns.login}::text, ''),
             'User ' || u.${this.sourceColumns.userId}::text
           ) AS moderator_name,
-          COALESCE(u.${this.sourceColumns.discordUserId}::text, '') AS discord_user_id,
+          COALESCE(NULLIF(u.${this.sourceColumns.discordUserId}::text, ''), dl.discord_user_id, '') AS discord_user_id,
           s.${this.sourceColumns.dateKey} AS date_key,
           s.${this.sourceColumns.shiftStartTime}::text AS start_time,
           s.${this.sourceColumns.shiftEndTime}::text AS end_time,
@@ -1610,6 +1633,8 @@ export class BotDatabase {
         FROM ${this.sourceTables.shifts} s
         INNER JOIN ${this.sourceTables.users} u
           ON u.${this.sourceColumns.userId} = s.${this.sourceColumns.shiftMemberId}
+        LEFT JOIN ${this.tables.discordLinks} dl
+          ON dl.sonara_user_id = u.${this.sourceColumns.userId}::text
         WHERE s.${this.sourceColumns.dateKey} BETWEEN $1::date AND $2::date
           ${blockedClause}
         ORDER BY s.${this.sourceColumns.dateKey} ASC, s.${this.sourceColumns.shiftStartTime} ASC
@@ -1643,18 +1668,45 @@ export class BotDatabase {
 
       const oldRows = oldRowsResult.rows;
       const oldMap = new Map(oldRows.map((row) => [row.shift_id, row]));
+      const sonaraUserIds = [
+        ...new Set(shifts.map((shift) => String(shift.sonaraUserId ?? "").trim()).filter(Boolean))
+      ];
+      const linkMap = new Map();
+      if (sonaraUserIds.length > 0) {
+        const linkResult = await client.query(
+          `
+            SELECT sonara_user_id, discord_user_id
+            FROM ${this.tables.discordLinks}
+            WHERE sonara_user_id = ANY($1::text[])
+          `,
+          [sonaraUserIds]
+        );
+        for (const row of linkResult.rows) {
+          linkMap.set(row.sonara_user_id, row.discord_user_id);
+        }
+      }
       const changes = { created: [], removed: [], updated: [] };
+      const savedShifts = [];
       const seenIds = new Set();
 
       for (const shift of shifts) {
         seenIds.add(shift.id);
         const previous = oldMap.get(shift.id);
+        const savedShift = {
+          ...shift,
+          discordUserId:
+            shift.discordUserId ||
+            linkMap.get(String(shift.sonaraUserId ?? "").trim()) ||
+            previous?.discord_user_id ||
+            ""
+        };
+        savedShifts.push(savedShift);
 
         if (!previous) {
-          changes.created.push(shift);
-        } else if (shiftChanged(previous, shift)) {
+          changes.created.push(savedShift);
+        } else if (shiftChanged(previous, savedShift)) {
           changes.updated.push({
-            current: shift,
+            current: savedShift,
             previous: this.mapShiftRow(previous)
           });
           await this.deleteNotificationsForShift(shift.id, client);
@@ -1663,7 +1715,7 @@ export class BotDatabase {
         await client.query(
           `
             INSERT INTO ${this.tables.trackedShifts} (
-              shift_id,
+            shift_id,
               sonara_user_id,
               user_role,
               team_key,
@@ -1698,21 +1750,21 @@ export class BotDatabase {
               last_synced_at = EXCLUDED.last_synced_at
           `,
           [
-            shift.id,
-            shift.sonaraUserId,
-            shift.userRole,
-            shift.teamKey,
-            shift.moderatorName,
-            shift.discordUserId,
-            shift.startsAt,
-            shift.endsAt,
-            shift.notes,
-            shift.shiftType,
-            shift.world,
-            shift.task,
-            Boolean(shift.isLead),
-            shift.updatedAt,
-            Boolean(shift.requiresClocking),
+            savedShift.id,
+            savedShift.sonaraUserId,
+            savedShift.userRole,
+            savedShift.teamKey,
+            savedShift.moderatorName,
+            savedShift.discordUserId,
+            savedShift.startsAt,
+            savedShift.endsAt,
+            savedShift.notes,
+            savedShift.shiftType,
+            savedShift.world,
+            savedShift.task,
+            Boolean(savedShift.isLead),
+            savedShift.updatedAt,
+            Boolean(savedShift.requiresClocking),
             nowIso
           ]
         );
@@ -1737,7 +1789,7 @@ export class BotDatabase {
 
       return {
         changes,
-        saved: shifts
+        saved: savedShifts
       };
     } catch (error) {
       await client.query("ROLLBACK");
